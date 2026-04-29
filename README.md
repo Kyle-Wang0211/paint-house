@@ -20,6 +20,18 @@ npm start
 
 服务器跑在 `http://localhost:3000`。在两个或多个浏览器窗口（或多台机器）同时打开此地址即可联机。任意一名玩家点击"开始游戏"开始一局。
 
+## 一键部署到 Render（免费）
+
+仓库根目录有 `render.yaml`，可以一键部署到 Render：
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Kyle-Wang0211/paint-house)
+
+第一次部署需要：登录 Render → 授权 GitHub → 确认 → 等约 3-5 分钟即可拿到
+`https://paint-house-XXXX.onrender.com` 公网链接（支持 WebSocket）。
+
+> Render 免费层在 15 分钟无访问后会休眠，下次请求会冷启动 ~30 秒。要常驻
+> 可升级 Starter（$7/月）。
+
 ## 项目结构
 
 | 路径 | 说明 |
