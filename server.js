@@ -302,28 +302,70 @@ wss.on('connection', (ws) => {
     if (msg.type === 'paint' && phase === 'playing') {
       if (player.dead) return;
       const now = Date.now();
-      if (now - player.lastPaintAt < 50) return;
+      if (now - player.lastPaintAt < 30) return;
       player.lastPaintAt = now;
       const x = clamp(+msg.x, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const z = clamp(+msg.z, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const r = clamp(+msg.r || 0.6, 0.1, 1.5);
       const floor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
+      // Optional stroke endpoint: paint a continuous line from (fromX, fromZ)
+      // on (fromFloor) up to (x, z) on `floor` — only if same floor and the
+      // distance is plausible (less than 6 m of movement in one tick).
+      const fromX = +msg.fromX, fromZ = +msg.fromZ;
+      const fromFloor = Number.isFinite(+msg.fromFloor) ? +msg.fromFloor : floor;
+      if (Number.isFinite(fromX) && Number.isFinite(fromZ) && fromFloor === floor) {
+        const dx = x - fromX, dz = z - fromZ;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.05 && d < 6) {
+          const stepLen = r * 0.5;
+          const steps = Math.max(1, Math.ceil(d / stepLen));
+          for (let i = 1; i < steps; i++) {
+            const t = i / steps;
+            stampPaint(player.id, fromX + dx * t, fromZ + dz * t, r, floor);
+          }
+        }
+      }
       stampPaint(player.id, x, z, r, floor);
-      broadcast({ type: 'paint', id: player.id, x, z, r, floor });
+      broadcast({
+        type: 'paint',
+        id: player.id, x, z, r, floor,
+        fromX: Number.isFinite(fromX) ? fromX : null,
+        fromZ: Number.isFinite(fromZ) ? fromZ : null,
+        fromFloor: Number.isFinite(fromFloor) ? fromFloor : null,
+      });
       return;
     }
 
     if (msg.type === 'footprint' && phase === 'playing') {
       if (player.dead) return;
       const now = Date.now();
-      if (now - player.lastFootprintAt < 80) return;
+      if (now - player.lastFootprintAt < 60) return;
       player.lastFootprintAt = now;
       const x = clamp(+msg.x, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const z = clamp(+msg.z, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const r = clamp(+msg.r || 0.32, 0.15, 0.5);
       const floor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
+      const fromX = +msg.fromX, fromZ = +msg.fromZ;
+      const fromFloor = Number.isFinite(+msg.fromFloor) ? +msg.fromFloor : floor;
+      if (Number.isFinite(fromX) && Number.isFinite(fromZ) && fromFloor === floor) {
+        const dx = x - fromX, dz = z - fromZ;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.05 && d < 4) {
+          const stepLen = r * 0.5;
+          const steps = Math.max(1, Math.ceil(d / stepLen));
+          for (let i = 1; i < steps; i++) {
+            const t = i / steps;
+            stampPaint(player.id, fromX + dx * t, fromZ + dz * t, r, floor);
+          }
+        }
+      }
       stampPaint(player.id, x, z, r, floor);
-      broadcast({ type: 'footprint', id: player.id, x, z, r, floor });
+      broadcast({
+        type: 'footprint', id: player.id, x, z, r, floor,
+        fromX: Number.isFinite(fromX) ? fromX : null,
+        fromZ: Number.isFinite(fromZ) ? fromZ : null,
+        fromFloor: Number.isFinite(fromFloor) ? fromFloor : null,
+      });
       return;
     }
 

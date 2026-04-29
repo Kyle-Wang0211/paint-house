@@ -318,13 +318,13 @@ net.on('paint', (m) => {
   const owner = players.get(m.id);
   if (!owner) return;
   if (m.id === myId) return;
-  painter.paint(m.x, m.z, m.r, owner.color, m.id, m.floor || 0);
+  paintStroke(m.fromX, m.fromZ, m.fromFloor, m.x, m.z, m.floor || 0, owner.color, m.id, m.r);
 });
 net.on('footprint', (m) => {
   const owner = players.get(m.id);
   if (!owner) return;
   if (m.id === myId) return;
-  painter.paint(m.x, m.z, m.r, owner.color, m.id, m.floor || 0);
+  paintStroke(m.fromX, m.fromZ, m.fromFloor, m.x, m.z, m.floor || 0, owner.color, m.id, m.r);
 });
 net.on('decal', (m) => {
   const owner = players.get(m.id);
@@ -541,17 +541,29 @@ function tryMove(me, dx, dz) {
     const nz = me.z + az;
     if (canStandAt(me, nx, nz)) {
       me.x = nx; me.z = nz;
-      // Auto-determine floor from position
       if (isOnRamp(nx, nz)) {
-        // remain on transitioning state — keep floor as last set; but commit
-        // floor change at endpoints
         if (nz <= rampDef.zMin + 0.05 && me.floor !== 0) me.floor = 0;
         if (nz >= rampDef.zMax - 0.05 && me.floor !== 1) me.floor = 1;
-      } else {
-        // Off-ramp: floor is determined by which slab we just stepped onto.
-        // Here we stay with current floor unless we just came off the ramp.
       }
       return;
+    }
+  }
+}
+
+// Self-extricate when the player ends up inside (or on the wrong side of)
+// a collider — e.g. floor change put them in a wall, or a server snap pushed
+// them into a corner. Sweeps a spiral of candidate offsets and teleports to
+// the first valid one.
+function unstickIfNeeded(me) {
+  if (canStandAt(me, me.x, me.z)) return;
+  for (let r = 0.4; r < 6; r += 0.4) {
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+      const tx = me.x + Math.cos(a) * r;
+      const tz = me.z + Math.sin(a) * r;
+      if (canStandAt(me, tx, tz)) {
+        me.x = tx; me.z = tz;
+        return;
+      }
     }
   }
 }
@@ -685,6 +697,8 @@ function animate(time) {
       if (phase === 'playing' && (dx !== 0 || dz !== 0)) {
         tryMove(me, dx, dz);
       }
+      // Safety net for any stuck state (collider overlap or server snap).
+      if (phase === 'playing') unstickIfNeeded(me);
 
       // Check enemy color (death) — only on actual floors, not on ramp
       if (phase === 'playing' && !isOnRamp(me.x, me.z)) {
@@ -713,26 +727,34 @@ function animate(time) {
         net.send({ type: 'move', x: me.x, z: me.z, ry: me.ry, floor: me.floor });
       }
 
-      // Footprints: stamp every FOOTPRINT_STEP meters along the trail (only
-      // on actual floors, not the ramp, and only when player actually moved).
+      // Footprints: every FOOTPRINT_STEP meters along the trail, drop a
+      // stroke from the previous stamp to the current position so the path
+      // reads as a continuous trail rather than discrete dots.
       if (phase === 'playing' && !isOnRamp(me.x, me.z)) {
         const fdx = me.x - lastFootprintX;
         const fdz = me.z - lastFootprintZ;
         const moved = Math.hypot(fdx, fdz);
-        if (moved > FOOTPRINT_STEP && time - lastSentFootprintAt > 70) {
+        if (moved > FOOTPRINT_STEP && time - lastSentFootprintAt > 60) {
           lastSentFootprintAt = time;
-          lastFootprintX = me.x; lastFootprintZ = me.z;
-          painter.paint(me.x, me.z, FOOTPRINT_RADIUS, myColor, myId, me.floor);
+          const fromX = lastFootprintX, fromZ = lastFootprintZ;
+          paintStroke(fromX, fromZ, me.floor, me.x, me.z, me.floor, myColor, myId, FOOTPRINT_RADIUS);
           net.send({
             type: 'footprint',
             x: me.x, z: me.z, r: FOOTPRINT_RADIUS, floor: me.floor,
+            fromX, fromZ, fromFloor: me.floor,
           });
+          lastFootprintX = me.x; lastFootprintZ = me.z;
         }
       }
 
-      if (firing && phase === 'playing' && time - lastSentPaintAt > 55) {
+      if (firing && phase === 'playing' && time - lastSentPaintAt > 32) {
         lastSentPaintAt = time;
         emitSpray(me);
+      }
+      if (!firing) {
+        // Reset the stroke anchor on key/button release so a new burst starts
+        // fresh rather than connecting to wherever we last stopped.
+        lastSprayX = null; lastSprayZ = null; lastSprayFloor = null;
       }
     } else if (me.dead) {
       // Keep avatar pinned at last position while dead

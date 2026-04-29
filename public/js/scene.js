@@ -176,22 +176,35 @@ export function buildHouse(floorSize, floor2Y) {
     addBox(w, slabT, HZ2 - HZ1, slabMat, x, slabY, (HZ1 + HZ2) / 2, { collide: false });
   }
 
-  // Soft railing around the upstairs hole so players don't fall in
+  // Soft railing around the upstairs hole so players don't fall in.
+  // IMPORTANT: no rail on the +Z (HZ2) side — that's where the ramp emerges
+  // onto the upstairs slab, putting a rail there would trap anyone climbing.
   const railH = 1.1;
   const railT = 0.08;
   const railMat = darkWoodMat;
-  // South edge of hole
-  addBox(HX2 - HX1, railH, railT, railMat,
-    (HX1 + HX2) / 2, floor2Y + railH / 2, HZ2,
-    { collide: true, floor: 1 });
-  // North edge of hole
+  // North edge of hole (-Z): blocks upstairs walking south into hole.
   addBox(HX2 - HX1, railH, railT, railMat,
     (HX1 + HX2) / 2, floor2Y + railH / 2, HZ1,
     { collide: true, floor: 1 });
-  // East side of hole
+  // East edge of hole (+X)
   addBox(railT, railH, HZ2 - HZ1, railMat,
     HX2, floor2Y + railH / 2, (HZ1 + HZ2) / 2,
     { collide: true, floor: 1 });
+  // West edge of hole (-X)
+  addBox(railT, railH, HZ2 - HZ1, railMat,
+    HX1, floor2Y + railH / 2, (HZ1 + HZ2) / 2,
+    { collide: true, floor: 1 });
+
+  // Ground-floor side walls flanking the ramp, so the only way ONTO the ramp
+  // from floor 0 is the south entrance (z < HZ1). Without these, a player
+  // could step laterally onto the ramp and be teleported up.
+  const rampSideWallH = floor2Y;
+  addBox(railT, rampSideWallH, HZ2 - HZ1, baseboardMat,
+    HX1, rampSideWallH / 2, (HZ1 + HZ2) / 2,
+    { collide: true, floor: 0 });
+  addBox(railT, rampSideWallH, HZ2 - HZ1, baseboardMat,
+    HX2, rampSideWallH / 2, (HZ1 + HZ2) / 2,
+    { collide: true, floor: 0 });
 
   // ---------- Ramp ----------
   // A tilted box from (mid, 0) at zMin to (mid, floor2Y) at zMax. Width matches
