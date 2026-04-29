@@ -774,9 +774,11 @@ function animate(time) {
   const me = players.get(myId);
   if (me) {
     if ((phase === 'playing' || phase === 'countdown') && !me.dead) {
-      // Camera rotation via keyboard (trackpad-friendly).
-      if (keys['KeyQ']) cameraYaw   += YAW_RATE * dt;
-      if (keys['KeyE']) cameraYaw   -= YAW_RATE * dt;
+      // Camera rotation via A/D (and arrow Left/Right). Trackpad-friendly,
+      // and combined with W/S for forward/back this is a clean tank-style
+      // scheme without needing pointer lock or extra keys.
+      if (keys['KeyA'] || keys['ArrowLeft'])  cameraYaw += YAW_RATE * dt;
+      if (keys['KeyD'] || keys['ArrowRight']) cameraYaw -= YAW_RATE * dt;
       const pitchInput = (keys['KeyR'] ? 1 : 0) - (keys['KeyF'] ? 1 : 0);
       if (pitchInput !== 0) {
         cameraPitch += pitchInput * PITCH_RATE * dt;
@@ -790,18 +792,15 @@ function animate(time) {
       if (cameraPitch < PITCH_MIN) cameraPitch = PITCH_MIN;
       if (cameraPitch > PITCH_MAX) cameraPitch = PITCH_MAX;
 
-      let mx = 0, mz = 0;
-      if (keys['KeyW'] || keys['ArrowUp'])    mz -= 1;
-      if (keys['KeyS'] || keys['ArrowDown'])  mz += 1;
-      if (keys['KeyA'] || keys['ArrowLeft'])  mx -= 1;
-      if (keys['KeyD'] || keys['ArrowRight']) mx += 1;
-      const ml = Math.hypot(mx, mz);
-      if (ml > 0) { mx /= ml; mz /= ml; }
-      // Movement is camera-relative: rotate input vector by cameraYaw so W is
-      // always "where the camera is looking" regardless of view rotation.
+      // W / S = forward / backward in the camera's looking direction.
+      // (A and D are rebound above to camera rotation, so there's no strafe.)
+      let mz = 0;
+      if (keys['KeyW'] || keys['ArrowUp'])   mz -= 1;
+      if (keys['KeyS'] || keys['ArrowDown']) mz += 1;
+      const ml = Math.abs(mz);
       const cy = Math.cos(cameraYaw), sy = Math.sin(cameraYaw);
-      const wx = mx * cy + mz * sy;
-      const wz = -mx * sy + mz * cy;
+      const wx = mz * sy;
+      const wz = mz * cy;
       const dx = wx * PLAYER_SPEED * dt;
       const dz = wz * PLAYER_SPEED * dt;
 
