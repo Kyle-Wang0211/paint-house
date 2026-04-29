@@ -14,8 +14,17 @@ export function buildHouse(floorSize) {
   const wallT = 0.25;
 
   // ---------- Materials ----------
+  // Walls are a cool blue-gray so they read clearly against the warm wood floor.
   const wallMat = new THREE.MeshStandardMaterial({
-    color: 0xf0ece2, roughness: 0.9, metalness: 0.0,
+    color: 0x8a9bb4, roughness: 0.95, metalness: 0.0,
+  });
+  // Accent panel for one feature wall to add depth.
+  const wallAccentMat = new THREE.MeshStandardMaterial({
+    color: 0x4d5a7a, roughness: 0.95,
+  });
+  // Dark baseboard so the wall-floor junction has a clean line at any camera angle.
+  const baseboardMat = new THREE.MeshStandardMaterial({
+    color: 0x2b1f15, roughness: 0.6,
   });
   const trimMat = new THREE.MeshStandardMaterial({
     color: 0xd9cfbf, roughness: 0.7,
@@ -146,12 +155,43 @@ export function buildHouse(floorSize) {
   // The painter floor sits at y=0.01. This base sits at y=-0.005 and is darker.
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(floorSize, floorSize),
-    new THREE.MeshStandardMaterial({ color: 0xb89875, roughness: 0.85 }),
+    new THREE.MeshStandardMaterial({ color: 0x6b4a2c, roughness: 0.85 }),
   );
   floorBase.rotation.x = -Math.PI / 2;
   floorBase.position.y = -0.005;
   floorBase.receiveShadow = true;
   group.add(floorBase);
+
+  // Plank lines on the floor: thin dark strips every 1.5m along z, so untouched
+  // floor reads as wood instead of a flat slab from above.
+  for (let i = -floorSize / 2 + 1.5; i < floorSize / 2; i += 1.5) {
+    const plank = new THREE.Mesh(
+      new THREE.PlaneGeometry(floorSize, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x3a2614, roughness: 0.8 }),
+    );
+    plank.rotation.x = -Math.PI / 2;
+    plank.position.set(0, 0.0, i);
+    group.add(plank);
+  }
+
+  // Baseboards along all four outer walls — a short dark band that defines the
+  // floor edge at every camera angle.
+  const baseH = 0.18;
+  const baseT = 0.06;
+  const halfB = floorSize / 2;
+  for (const [x, z, w, d] of [
+    [0, -halfB + baseT / 2, floorSize, baseT],
+    [0, halfB - baseT / 2, floorSize, baseT],
+    [-halfB + baseT / 2, 0, baseT, floorSize],
+    [halfB - baseT / 2, 0, baseT, floorSize],
+  ]) {
+    const base = new THREE.Mesh(
+      new THREE.BoxGeometry(w, baseH, d),
+      baseboardMat,
+    );
+    base.position.set(x, baseH / 2, z);
+    group.add(base);
+  }
 
   // ---------- Interior dividers (suggest rooms but stay open) ----------
   // A short divider creating a "kitchen" pocket in the SW corner.

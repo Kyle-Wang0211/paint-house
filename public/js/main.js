@@ -35,12 +35,13 @@ scene.fog = new THREE.Fog(0x111118, 30, 80);
 
 const camera = new THREE.PerspectiveCamera(55, 2, 0.1, 200);
 
-// Lights
-const hemi = new THREE.HemisphereLight(0xffffff, 0x554466, 0.85);
+// Lights — keep total intensity moderate so ACES tonemapping doesn't crush
+// everything to a uniform pale gray.
+const hemi = new THREE.HemisphereLight(0xb8c5d8, 0x3a3045, 0.45);
 scene.add(hemi);
-const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+const ambient = new THREE.AmbientLight(0xffffff, 0.08);
 scene.add(ambient);
-const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+const sun = new THREE.DirectionalLight(0xfff1d0, 0.75);
 sun.position.set(15, 30, 8);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -508,14 +509,15 @@ function animate(time) {
 
   // ----- camera follow -----
   if (me) {
-    // Over-shoulder follow camera: ~5m up, ~7m behind, looking forward over player.
+    // Over-shoulder follow camera: ~3.5m up, ~6m behind, looking forward.
+    // Lower angle than a strict top-down so walls and furniture stay in frame.
     const targetX = me.x;
-    const targetY = 5.0;
-    const targetZ = me.z + 7.0;
+    const targetY = 3.5;
+    const targetZ = me.z + 6.0;
     camera.position.lerp(tmpVec.set(targetX, targetY, targetZ), Math.min(1, dt * 5));
-    camera.lookAt(me.x, 1.5, me.z - 1.5);
+    camera.lookAt(me.x, 1.0, me.z - 2.0);
   } else {
-    camera.position.set(0, 6, 12);
+    camera.position.set(0, 4, 10);
     camera.lookAt(0, 1, 0);
   }
 
@@ -555,6 +557,9 @@ function fitRenderer() {
 }
 window.addEventListener('resize', fitRenderer);
 fitRenderer();
+
+// Debug hook for inspection (harmless in prod)
+window.__game = { scene, camera, renderer, players, painter, house, getMe: () => players.get(myId) };
 
 
 requestAnimationFrame(animate);
