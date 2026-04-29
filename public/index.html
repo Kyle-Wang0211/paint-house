@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>喷涂大房子 · 多人在线</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- Top HUD -->
+  <div id="hud" class="hud">
+    <div id="timer" class="timer">--</div>
+    <div id="scoreboard" class="scoreboard"></div>
+  </div>
+
+  <!-- Crosshair -->
+  <div id="crosshair" class="crosshair">
+    <div class="dot"></div>
+  </div>
+
+  <!-- Lobby / Menu overlay -->
+  <div id="overlay" class="overlay">
+    <div class="panel">
+      <h1>喷涂大房子</h1>
+      <p class="sub">多人在线 · 喷涂地板 · 占地为王</p>
+      <div class="row">
+        <label>名字</label>
+        <input id="name" maxlength="16" placeholder="给自己起个名字">
+      </div>
+      <div id="players" class="players"></div>
+      <div id="status" class="status">连接中…</div>
+      <button id="startBtn" class="primary" disabled>开始游戏</button>
+      <div class="hint">
+        WASD / 方向键 移动 ·
+        鼠标 视角（点击锁定）·
+        <b>左键 / 空格</b> 喷涂
+      </div>
+    </div>
+  </div>
+
+  <!-- Result overlay -->
+  <div id="result" class="overlay hidden">
+    <div class="panel">
+      <h1 id="resultTitle">结果</h1>
+      <div id="ranking" class="ranking"></div>
+      <button id="restartBtn" class="primary">再来一局</button>
+    </div>
+  </div>
+
+  <!-- Countdown overlay -->
+  <div id="countdown" class="countdown hidden"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
