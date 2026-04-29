@@ -46,11 +46,14 @@ cameraPivot.rotation.order = 'YXZ';
 scene.add(cameraPivot);
 cameraPivot.add(camera);
 const CAMERA_DISTANCE = 6.8;
+const CAMERA_NEAR_LIMIT = 1.5; // never pull camera closer than this to player
+const CAMERA_DEFAULT_PITCH = -0.30;
 camera.position.set(0, 0, CAMERA_DISTANCE);
 let cameraYaw = 0;
-let cameraPitch = -0.30;       // start tilted slightly down so floor is visible
-const PITCH_MIN = -1.05;
-const PITCH_MAX = 0.45;
+let cameraPitch = CAMERA_DEFAULT_PITCH;  // tilted slightly down by default
+let cameraDistanceCurrent = CAMERA_DISTANCE;
+const PITCH_MIN = -0.55;       // ~32° down — enough to see floor, not lose horizon
+const PITCH_MAX = 0.30;        // ~17° up — can spray walls/ceiling slightly
 
 // Lights — moderate so ACES doesn't crush colors.
 const hemi = new THREE.HemisphereLight(0xb8c5d8, 0x3a3045, 0.45);
@@ -499,6 +502,13 @@ window.addEventListener('keydown', (e) => {
   if (document.activeElement === nameInput) return;
   keys[e.code] = true;
   if (e.code === 'Space') { firing = true; e.preventDefault(); }
+  // V resets view to align with player's facing + default pitch (panic button
+  // if the camera ends up somewhere disorienting).
+  if (e.code === 'KeyV') {
+    const me = players.get(myId);
+    cameraYaw = me ? (me.ry || 0) : 0;
+    cameraPitch = CAMERA_DEFAULT_PITCH;
+  }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -663,6 +673,38 @@ function emitSpray(me) {
   }
 }
 
+// ----- Camera collision -----
+// Cast a ray from the pivot (player's chest) outward to where the camera
+// wants to sit; if a wall or piece of furniture is in the way, pull the
+// camera in along its local +Z axis until it's just in front of the obstacle.
+const camRaycaster = new THREE.Raycaster();
+const camRayOrigin = new THREE.Vector3();
+const camRayDesired = new THREE.Vector3();
+const camRayDir = new THREE.Vector3();
+
+function applyCameraCollision(dt) {
+  cameraPivot.getWorldPosition(camRayOrigin);
+  camRayDesired.set(0, 0, CAMERA_DISTANCE).applyMatrix4(cameraPivot.matrixWorld);
+  camRayDir.subVectors(camRayDesired, camRayOrigin);
+  const fullDist = camRayDir.length();
+  if (fullDist < 0.01) return;
+  camRayDir.divideScalar(fullDist);
+  camRaycaster.set(camRayOrigin, camRayDir);
+  camRaycaster.far = fullDist;
+  const hits = camRaycaster.intersectObjects(fadables, false);
+  let target = CAMERA_DISTANCE;
+  if (hits.length > 0) {
+    target = Math.max(CAMERA_NEAR_LIMIT, hits[0].distance - 0.3);
+  }
+  // Snap quickly toward closer (don't clip), lerp back outward smoothly.
+  if (target < cameraDistanceCurrent) {
+    cameraDistanceCurrent = target;
+  } else {
+    cameraDistanceCurrent += (target - cameraDistanceCurrent) * Math.min(1, dt * 6);
+  }
+  camera.position.z = cameraDistanceCurrent;
+}
+
 // ----- Occlusion fade -----
 const occRaycaster = new THREE.Raycaster();
 const occPlayerPos = new THREE.Vector3();
@@ -705,8 +747,16 @@ function animate(time) {
       // Camera rotation via keyboard (trackpad-friendly).
       if (keys['KeyQ']) cameraYaw   += YAW_RATE * dt;
       if (keys['KeyE']) cameraYaw   -= YAW_RATE * dt;
-      if (keys['KeyR']) cameraPitch += PITCH_RATE * dt;
-      if (keys['KeyF']) cameraPitch -= PITCH_RATE * dt;
+      const pitchInput = (keys['KeyR'] ? 1 : 0) - (keys['KeyF'] ? 1 : 0);
+      if (pitchInput !== 0) {
+        cameraPitch += pitchInput * PITCH_RATE * dt;
+      } else {
+        // Auto-relax pitch back toward default when nothing held — keeps the
+        // horizon line stable so the player doesn't drift into a top-down or
+        // sky-view orientation by accident.
+        const decay = (CAMERA_DEFAULT_PITCH - cameraPitch) * Math.min(1, dt * 1.6);
+        cameraPitch += decay;
+      }
       if (cameraPitch < PITCH_MIN) cameraPitch = PITCH_MIN;
       if (cameraPitch > PITCH_MAX) cameraPitch = PITCH_MAX;
 
@@ -815,7 +865,7 @@ function animate(time) {
     }
   }
 
-  // Camera follow — pivot orbits player's chest, mouse-look drives its rotation.
+  // Camera follow — pivot orbits player's chest, Q/E/R/F drive its rotation.
   if (me) {
     const meY = currentY(me);
     cameraPivot.position.lerp(
@@ -823,10 +873,13 @@ function animate(time) {
       Math.min(1, dt * 12),
     );
     cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
+    cameraPivot.updateMatrixWorld(true);
+    applyCameraCollision(dt);
     if (!me.dead) updateOcclusion(me, dt);
   } else {
     cameraPivot.position.set(0, 1.4, 0);
     cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
+    cameraPivot.updateMatrixWorld(true);
   }
 
   // Timer / countdown / death UI
