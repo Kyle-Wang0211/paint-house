@@ -6,7 +6,7 @@ body {
   user-select: none;
 }
 
-#game { position: fixed; inset: 0; display: block; cursor: crosshair; }
+#game { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: crosshair; }
 
 /* HUD */
 .hud {

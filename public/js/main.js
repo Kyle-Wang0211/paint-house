@@ -36,9 +36,11 @@ scene.fog = new THREE.Fog(0x111118, 30, 80);
 const camera = new THREE.PerspectiveCamera(55, 2, 0.1, 200);
 
 // Lights
-const hemi = new THREE.HemisphereLight(0xffffff, 0x444466, 0.55);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x554466, 0.85);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+scene.add(ambient);
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
 sun.position.set(15, 30, 8);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -506,14 +508,15 @@ function animate(time) {
 
   // ----- camera follow -----
   if (me) {
-    const targetX = me.x + 0;
-    const targetY = 9;
-    const targetZ = me.z + 9;
+    // Over-shoulder follow camera: ~5m up, ~7m behind, looking forward over player.
+    const targetX = me.x;
+    const targetY = 5.0;
+    const targetZ = me.z + 7.0;
     camera.position.lerp(tmpVec.set(targetX, targetY, targetZ), Math.min(1, dt * 5));
-    camera.lookAt(me.x, 1.0, me.z);
+    camera.lookAt(me.x, 1.5, me.z - 1.5);
   } else {
-    camera.position.set(0, 14, 14);
-    camera.lookAt(0, 0, 0);
+    camera.position.set(0, 6, 12);
+    camera.lookAt(0, 1, 0);
   }
 
   // ----- timer & countdown UI -----
@@ -529,7 +532,6 @@ function animate(time) {
     timerEl.textContent = '--';
   }
 
-  fitRenderer();
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
@@ -542,24 +544,17 @@ function lerpAngle(a, b, t) {
 }
 
 function fitRenderer() {
-  // Use the canvas's CSS-laid-out size; falls back to viewport dimensions.
-  // window.innerWidth can be unreliable inside iframes / preview panels.
-  const rect = canvas.getBoundingClientRect();
-  let w = Math.round(rect.width);
-  let h = Math.round(rect.height);
-  if (w < 8) w = document.documentElement.clientWidth || window.innerWidth || 1280;
-  if (h < 8) h = document.documentElement.clientHeight || window.innerHeight || 720;
-  if (renderer.domElement.width !== Math.floor(w * renderer.getPixelRatio()) ||
-      renderer.domElement.height !== Math.floor(h * renderer.getPixelRatio())) {
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  }
+  const w = Math.max(320, window.innerWidth || document.documentElement.clientWidth || 1280);
+  const h = Math.max(240, window.innerHeight || document.documentElement.clientHeight || 720);
+  const pr = renderer.getPixelRatio();
+  if (renderer.domElement.width === Math.floor(w * pr) &&
+      renderer.domElement.height === Math.floor(h * pr)) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', fitRenderer);
-if (typeof ResizeObserver !== 'undefined') {
-  new ResizeObserver(fitRenderer).observe(document.body);
-}
 fitRenderer();
+
 
 requestAnimationFrame(animate);
