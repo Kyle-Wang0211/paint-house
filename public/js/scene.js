@@ -8,6 +8,9 @@ import * as THREE from 'three';
 export function buildHouse(floorSize) {
   const group = new THREE.Group();
   const colliders = [];
+  // Meshes that should fade out when they occlude the camera→player line.
+  // Anything added via addBox (walls + furniture) is automatically tracked here.
+  const fadables = [];
 
   const half = floorSize / 2;
   const wallH = 4.2;
@@ -64,10 +67,13 @@ export function buildHouse(floorSize) {
   // ---------- Helpers ----------
   function addBox(w, h, d, mat, x, y, z, opts = {}) {
     const geo = new THREE.BoxGeometry(w, h, d);
-    const m = new THREE.Mesh(geo, mat);
+    // Clone the material so per-mesh opacity changes don't bleed across siblings.
+    const m = new THREE.Mesh(geo, mat.clone());
     m.position.set(x, y, z);
     m.castShadow = opts.castShadow ?? true;
     m.receiveShadow = opts.receiveShadow ?? true;
+    m.userData.fadable = true;
+    fadables.push(m);
     group.add(m);
     if (opts.collide) {
       colliders.push({
@@ -296,5 +302,5 @@ export function buildHouse(floorSize) {
     group.add(point);
   }
 
-  return { group, colliders };
+  return { group, colliders, fadables };
 }

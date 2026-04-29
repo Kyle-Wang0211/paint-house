@@ -56,8 +56,79 @@ scene.add(sun);
 
 // World
 const FLOOR_SIZE = 30;
-const { group: house, colliders } = buildHouse(FLOOR_SIZE);
+const { group: house, colliders, fadables } = buildHouse(FLOOR_SIZE);
 scene.add(house);
+// Each fadable starts fully opaque; opacity is lerped each frame in updateOcclusion().
+for (const m of fadables) {
+  m.userData.fadeTarget = 1.0;
+  m.material.transparent = false;
+  m.material.opacity = 1.0;
+}
+// Stable index so wall-paint events can refer to the same mesh across clients.
+fadables.forEach((m, i) => { m.userData.fadeIndex = i; });
+
+// ---------- Wall splat (decal) painter ----------
+// A circular soft-edge texture, white so we can tint per player via material.color.
+const splatTexture = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 60);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.65, 'rgba(255,255,255,0.92)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(64, 64, 60, 0, Math.PI * 2);
+  ctx.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+
+const wallSplatGroup = new THREE.Group();
+scene.add(wallSplatGroup);
+const MAX_WALL_SPLATS = 800; // ring buffer to keep memory bounded
+const wallSplats = [];
+
+const SPLAT_PLANE_NORMAL = new THREE.Vector3(0, 0, 1);
+function spawnWallSplat(point, normal, colorHex, sizeMeters = 1.1) {
+  const mat = new THREE.MeshBasicMaterial({
+    map: splatTexture,
+    color: parseInt(colorHex.slice(1), 16),
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
+  const geo = new THREE.PlaneGeometry(sizeMeters, sizeMeters);
+  const mesh = new THREE.Mesh(geo, mat);
+  // Offset slightly off the surface to avoid z-fight, then orient the plane
+  // so its +Z (textured face) points along the surface normal — i.e. out of
+  // the wall toward the room.
+  mesh.position.copy(point).addScaledVector(normal, 0.015);
+  mesh.quaternion.setFromUnitVectors(SPLAT_PLANE_NORMAL, normal);
+  mesh.rotateZ(Math.random() * Math.PI * 2);
+  wallSplatGroup.add(mesh);
+  wallSplats.push(mesh);
+  if (wallSplats.length > MAX_WALL_SPLATS) {
+    const old = wallSplats.shift();
+    wallSplatGroup.remove(old);
+    old.geometry.dispose();
+    old.material.dispose();
+  }
+  return mesh;
+}
+
+function clearWallSplats() {
+  for (const m of wallSplats) {
+    wallSplatGroup.remove(m);
+    m.geometry.dispose();
+    m.material.dispose();
+  }
+  wallSplats.length = 0;
+}
 const painter = new Painter({ floorSize: FLOOR_SIZE, resolution: 1024, gridResolution: 256 });
 scene.add(painter.mesh);
 
@@ -248,6 +319,17 @@ net.on('paint', (m) => {
   if (m.id === myId) return;
   painter.paint(m.x, m.z, m.r, owner.color, m.id);
 });
+net.on('decal', (m) => {
+  const owner = players.get(m.id);
+  if (!owner) return;
+  if (m.id === myId) return;
+  spawnWallSplat(
+    new THREE.Vector3(m.x, m.y, m.z),
+    new THREE.Vector3(m.nx, m.ny, m.nz),
+    owner.color,
+    m.r,
+  );
+});
 net.on('phase', (m) => applyPhase(m.phase, m.endsAt, m.ranking, m));
 net.on('scores', (m) => {
   if (phase !== 'playing') return;
@@ -276,12 +358,14 @@ function applyPhase(p, endsAt, ranking, fullMsg) {
     timerEl.textContent = '--';
     scoreboardEl.innerHTML = '';
     painter.reset();
+    clearWallSplats();
     crosshair.classList.remove('active');
   } else if (p === 'countdown') {
     overlay.classList.add('hidden');
     result.classList.add('hidden');
     countdownEl.classList.remove('hidden');
     painter.reset();
+    clearWallSplats();
     // Snap players to their (server-spawned) positions
     if (fullMsg && fullMsg.players) {
       for (const sp of fullMsg.players) {
@@ -391,12 +475,97 @@ nameInput.addEventListener('change', () => {
 const PLAYER_SPEED = 5.5;
 const PLAYER_RADIUS = 0.35;
 const PAINT_RADIUS = 0.65;
-const PAINT_REACH = 1.6;
+const PAINT_REACH = 1.6;        // fallback when mouse is off-screen
+const MAX_PAINT_REACH = 9.0;    // mouse-aim spray distance cap
 
 const tmpVec = new THREE.Vector3();
 const raycaster = new THREE.Raycaster();
 const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const aimPoint = new THREE.Vector3();
+
+// Reusable objects for the occlusion-fade ray cast.
+const occRaycaster = new THREE.Raycaster();
+const occPlayerPos = new THREE.Vector3();
+const occCamDir = new THREE.Vector3();
+const FADE_OPACITY = 0.1;     // walls fade to 10% when blocking view, per spec
+const FADE_RATE = 12;         // higher = snappier transitions
+
+// Spray ray from player chest toward mouse aim. Returns the first hit on
+// either the floor or any fadable mesh (walls, furniture).
+const sprayRay = new THREE.Raycaster();
+const sprayOrigin = new THREE.Vector3();
+const sprayDir = new THREE.Vector3();
+const sprayAimVec = new THREE.Vector3();
+function emitSpray(me) {
+  const aim = getMouseAim();
+  if (!aim) {
+    // No mouse aim → fall back to spraying in front of the player on the floor.
+    const fx = me.x + Math.sin(me.ry) * PAINT_REACH;
+    const fz = me.z + Math.cos(me.ry) * PAINT_REACH;
+    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId);
+    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS });
+    return;
+  }
+  sprayOrigin.set(me.x, 1.2, me.z);
+  sprayAimVec.copy(aim);
+  sprayDir.subVectors(sprayAimVec, sprayOrigin).normalize();
+  sprayRay.set(sprayOrigin, sprayDir);
+  sprayRay.far = MAX_PAINT_REACH + 4;
+  const candidates = [painter.mesh, ...fadables];
+  const hits = sprayRay.intersectObjects(candidates, false);
+  if (hits.length === 0) return;
+  const hit = hits[0];
+  if (hit.object === painter.mesh) {
+    // Floor hit → canvas paint (counts toward area + restricts movement).
+    let fx = hit.point.x, fz = hit.point.z;
+    // Clamp reach in case the floor extends far beyond the room.
+    const dx = fx - me.x, dz = fz - me.z;
+    const d = Math.hypot(dx, dz);
+    if (d > MAX_PAINT_REACH) {
+      fx = me.x + dx * MAX_PAINT_REACH / d;
+      fz = me.z + dz * MAX_PAINT_REACH / d;
+    }
+    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId);
+    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS });
+  } else {
+    // Wall / furniture hit → spawn a decal at the hit point.
+    const point = hit.point;
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    spawnWallSplat(point, normal, myColor, PAINT_RADIUS * 1.8);
+    net.send({
+      type: 'decal',
+      x: point.x, y: point.y, z: point.z,
+      nx: normal.x, ny: normal.y, nz: normal.z,
+      r: PAINT_RADIUS * 1.8,
+    });
+  }
+}
+
+function updateOcclusion(me, dt) {
+  // Reset target opacity on every frame; raycast hits will mark occluders.
+  for (const m of fadables) m.userData.fadeTarget = 1.0;
+
+  occPlayerPos.set(me.x, 1.0, me.z);
+  occCamDir.subVectors(occPlayerPos, camera.position);
+  const dist = occCamDir.length();
+  if (dist > 0.05) {
+    occCamDir.divideScalar(dist);
+    occRaycaster.set(camera.position, occCamDir);
+    occRaycaster.far = dist;
+    const hits = occRaycaster.intersectObjects(fadables, false);
+    for (const h of hits) h.object.userData.fadeTarget = FADE_OPACITY;
+  }
+
+  const t = Math.min(1, dt * FADE_RATE);
+  for (const m of fadables) {
+    const target = m.userData.fadeTarget;
+    const cur = m.material.opacity;
+    if (Math.abs(cur - target) > 0.001) {
+      m.material.opacity = cur + (target - cur) * t;
+      m.material.transparent = m.material.opacity < 0.99;
+    }
+  }
+}
 
 function getMouseAim() {
   raycaster.setFromCamera(mouseAim, camera);
@@ -480,15 +649,12 @@ function animate(time) {
         net.send({ type: 'move', x: me.x, z: me.z, ry: me.ry });
       }
 
-      // Spray paint if firing
+      // Spray paint if firing — raycast from chest height through the mouse
+      // cursor. First surface hit decides whether it's a floor stamp or a
+      // wall/furniture splat.
       if (firing && phase === 'playing' && time - lastSentPaintAt > 55) {
         lastSentPaintAt = time;
-        // Paint point: in front of player
-        const fx = me.x + Math.sin(me.ry) * PAINT_REACH;
-        const fz = me.z + Math.cos(me.ry) * PAINT_REACH;
-        // Apply locally (optimistic)
-        painter.paint(fx, fz, PAINT_RADIUS, myColor, myId);
-        net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS });
+        emitSpray(me);
       }
     }
   }
@@ -516,6 +682,7 @@ function animate(time) {
     const targetZ = me.z + 6.0;
     camera.position.lerp(tmpVec.set(targetX, targetY, targetZ), Math.min(1, dt * 5));
     camera.lookAt(me.x, 1.0, me.z - 2.0);
+    updateOcclusion(me, dt);
   } else {
     camera.position.set(0, 4, 10);
     camera.lookAt(0, 1, 0);
@@ -559,7 +726,12 @@ window.addEventListener('resize', fitRenderer);
 fitRenderer();
 
 // Debug hook for inspection (harmless in prod)
-window.__game = { scene, camera, renderer, players, painter, house, getMe: () => players.get(myId) };
+window.__game = {
+  scene, camera, renderer, players, painter, house, fadables,
+  wallSplatGroup, spawnWallSplat, updateOcclusion, emitSpray,
+  THREE,
+  getMe: () => players.get(myId),
+};
 
 
 requestAnimationFrame(animate);

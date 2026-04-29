@@ -280,6 +280,21 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (msg.type === 'decal' && phase === 'playing') {
+      const now = Date.now();
+      if (now - player.lastPaintAt < 50) return;
+      player.lastPaintAt = now;
+      // Decals are visual-only; no grid update, just rebroadcast to others.
+      broadcast({
+        type: 'decal',
+        id: player.id,
+        x: +msg.x, y: +msg.y, z: +msg.z,
+        nx: +msg.nx, ny: +msg.ny, nz: +msg.nz,
+        r: clamp(+msg.r || 1.1, 0.2, 2.5),
+      }, player.id);
+      return;
+    }
+
     if (msg.type === 'startRound') {
       if (phase === 'lobby' || phase === 'ended') startCountdown();
       return;
