@@ -329,6 +329,7 @@ net.on('playerMove', (m) => {
   const p = players.get(m.id);
   if (!p) return;
   p.tx = m.x; p.tz = m.z; p.try = m.ry; p.tFloor = m.floor || 0;
+  if (Number.isFinite(m.y)) p.ty = m.y;
 });
 net.on('paint', (m) => {
   const owner = players.get(m.id);
@@ -365,6 +366,7 @@ net.on('respawn', (m) => {
   me.x = m.x; me.z = m.z; me.tx = m.x; me.tz = m.z;
   me.floor = m.floor || 0; me.tFloor = me.floor;
   me.ry = m.ry || 0; me.try = me.ry;
+  me.onRamp = false;
   me.y = me.floor === 1 ? FLOOR2_Y : 0;
   me.dead = false;
   setAvatarVisibility(me);
@@ -417,6 +419,9 @@ function applyPhase(p, endsAt, ranking, fullMsg) {
           pp.x = sp.x; pp.z = sp.z; pp.ry = sp.ry || 0;
           pp.tx = sp.x; pp.tz = sp.z; pp.try = sp.ry || 0;
           pp.floor = sp.floor || 0; pp.tFloor = pp.floor;
+          pp.onRamp = false;
+          pp.y = pp.floor === 1 ? FLOOR2_Y : 0;
+          pp.ty = pp.y;
           pp.dead = false;
           if (pp.mesh) {
             pp.mesh.position.set(sp.x, currentY(pp), sp.z);
@@ -559,7 +564,10 @@ function rampYAt(z) {
 }
 
 function currentY(p) {
-  if (isOnRamp(p.x, p.z)) return rampYAt(p.z);
+  if (p.onRamp) return rampYAt(p.z);
+  // Remote players: server includes y in their move payload (set into p.y);
+  // fall back to the floor-based default if we haven't received one yet.
+  if (p.id !== myId && Number.isFinite(p.y)) return p.y;
   return p.floor === 1 ? FLOOR2_Y : 0;
 }
 
@@ -569,11 +577,33 @@ function tryMove(me, dx, dz) {
     const nx = me.x + ax;
     const nz = me.z + az;
     if (canStandAt(me, nx, nz)) {
-      me.x = nx; me.z = nz;
-      if (isOnRamp(nx, nz)) {
-        if (nz <= rampDef.zMin + 0.05 && me.floor !== 0) me.floor = 0;
-        if (nz >= rampDef.zMax - 0.05 && me.floor !== 1) me.floor = 1;
+      const oldZ = me.z;
+      const wasInRamp = isOnRamp(me.x, oldZ);
+      const nowInRamp = isOnRamp(nx, nz);
+
+      // Ramp state machine. me.onRamp is true only while standing on the
+      // ramp surface. Walking under the ramp on the ground floor leaves it
+      // false, so the player is NOT teleported up by the Y interpolation.
+      if (!wasInRamp && nowInRamp) {
+        // Just stepped into the ramp footprint — only treat as on-ramp if
+        // we crossed a valid endpoint in the right direction.
+        if (me.floor === 0 && oldZ < rampDef.zMin && nz >= rampDef.zMin) {
+          me.onRamp = true;        // ground floor entering north end going +Z (going UP)
+        } else if (me.floor === 1 && oldZ > rampDef.zMax && nz <= rampDef.zMax) {
+          me.onRamp = true;        // upstairs entering south end going -Z (going DOWN)
+        } else {
+          me.onRamp = false;       // walking under (ground) or skirting the hole rails (upstairs)
+        }
+      } else if (wasInRamp && !nowInRamp) {
+        // Just stepped out of ramp footprint
+        if (me.onRamp) {
+          if (nz < rampDef.zMin) me.floor = 0;
+          else if (nz > rampDef.zMax) me.floor = 1;
+        }
+        me.onRamp = false;
       }
+
+      me.x = nx; me.z = nz;
       return;
     }
   }
@@ -807,10 +837,15 @@ function animate(time) {
       me.mesh.position.set(me.x, meY, me.z);
       me.mesh.rotation.y = me.ry + Math.PI;
 
-      // Send move (throttled)
+      // Send move (throttled). Include y so other clients can render us at
+      // the correct height while transitioning between floors via the ramp.
       if (time - lastSentMoveAt > 50) {
         lastSentMoveAt = time;
-        net.send({ type: 'move', x: me.x, z: me.z, ry: me.ry, floor: me.floor });
+        net.send({
+          type: 'move',
+          x: me.x, y: currentY(me), z: me.z,
+          ry: me.ry, floor: me.floor,
+        });
       }
 
       // Footprints: every FOOTPRINT_STEP meters along the trail, drop a
@@ -854,9 +889,14 @@ function animate(time) {
   for (const p of players.values()) {
     if (p.id === myId) continue;
     if (p.tx !== undefined) {
-      p.x += (p.tx - p.x) * Math.min(1, dt * 12);
-      p.z += (p.tz - p.z) * Math.min(1, dt * 12);
-      p.ry = lerpAngle(p.ry || 0, p.try || 0, Math.min(1, dt * 12));
+      const k = Math.min(1, dt * 12);
+      p.x += (p.tx - p.x) * k;
+      p.z += (p.tz - p.z) * k;
+      if (Number.isFinite(p.ty)) {
+        if (!Number.isFinite(p.y)) p.y = p.ty;
+        p.y += (p.ty - p.y) * k;
+      }
+      p.ry = lerpAngle(p.ry || 0, p.try || 0, k);
       if (Number.isFinite(p.tFloor)) p.floor = p.tFloor;
       if (p.mesh) {
         p.mesh.position.set(p.x, currentY(p), p.z);

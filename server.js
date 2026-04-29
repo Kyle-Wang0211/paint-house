@@ -135,15 +135,23 @@ function pickColor() {
   return PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)];
 }
 
+// Spawn slots in the south-central main hall on floor 0 — well clear of the
+// staircase footprint (x ∈ [-2.5, 2.5], z ∈ [-2, 8]) and the surrounding
+// furniture. Players face north (toward the rest of the room) by default.
+const SPAWN_SLOTS = [
+  { x: -4.0, z: 14.5 },
+  { x:  4.0, z: 14.5 },
+  { x: -1.5, z: 14.5 },
+  { x:  1.5, z: 14.5 },
+  { x: -4.0, z: 16.5 },
+  { x:  4.0, z: 16.5 },
+  { x: -1.5, z: 16.5 },
+  { x:  1.5, z: 16.5 },
+];
+
 function spawnPosition(seed) {
-  // Spread players around floor 0 perimeter at distinct angles
-  const angle = (seed / Math.max(1, players.size || 1)) * Math.PI * 2;
-  return {
-    x: Math.cos(angle) * (FLOOR_SIZE * 0.32),
-    z: Math.sin(angle) * (FLOOR_SIZE * 0.32),
-    floor: 0,
-    ry: angle + Math.PI,
-  };
+  const slot = SPAWN_SLOTS[((seed % SPAWN_SLOTS.length) + SPAWN_SLOTS.length) % SPAWN_SLOTS.length];
+  return { x: slot.x, z: slot.z, floor: 0, ry: Math.PI };
 }
 
 function killPlayer(player, killerId) {
@@ -156,13 +164,10 @@ function killPlayer(player, killerId) {
 }
 
 function respawnPlayer(player) {
-  let i = 0;
-  for (const p of players.values()) {
-    if (p.id === player.id) break;
-    i++;
-  }
-  const sp = spawnPosition(i + Math.random() * 0.5);
-  player.x = sp.x; player.z = sp.z; player.floor = 0; player.ry = sp.ry;
+  // Pick any random spawn slot in the lobby — keeps respawns away from the
+  // staircase and outer walls regardless of who/how many died simultaneously.
+  const sp = SPAWN_SLOTS[Math.floor(Math.random() * SPAWN_SLOTS.length)];
+  player.x = sp.x; player.z = sp.z; player.floor = 0; player.ry = Math.PI;
   player.dead = false;
   player.deadUntil = 0;
   send(player, { type: 'respawn', x: player.x, z: player.z, floor: 0, ry: player.ry });
@@ -291,10 +296,12 @@ wss.on('connection', (ws) => {
         }
       }
 
-      player.x = nx; player.z = nz; player.floor = reqFloor; player.ry = ry;
+      const ny = clamp(+msg.y || 0, 0, FLOOR2_Y + 1);
+      player.x = nx; player.y = ny; player.z = nz;
+      player.floor = reqFloor; player.ry = ry;
       broadcast({
         type: 'playerMove',
-        id: player.id, x: nx, z: nz, ry, floor: reqFloor,
+        id: player.id, x: nx, y: ny, z: nz, ry, floor: reqFloor,
       }, player.id);
       return;
     }
