@@ -37,7 +37,20 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111118);
 scene.fog = new THREE.Fog(0x111118, 40, 110);
 
-const camera = new THREE.PerspectiveCamera(55, 2, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 200);
+// The camera lives on a pivot that orbits the player's chest. Yaw rotates
+// horizontally; pitch tilts up/down. Mouse delta drives both while pointer
+// lock is active.
+const cameraPivot = new THREE.Object3D();
+cameraPivot.rotation.order = 'YXZ';
+scene.add(cameraPivot);
+cameraPivot.add(camera);
+const CAMERA_DISTANCE = 6.8;
+camera.position.set(0, 0, CAMERA_DISTANCE);
+let cameraYaw = 0;
+let cameraPitch = -0.30;       // start tilted slightly down so floor is visible
+const PITCH_MIN = -1.05;
+const PITCH_MAX = 0.45;
 
 // Lights — moderate so ACES doesn't crush colors.
 const hemi = new THREE.HemisphereLight(0xb8c5d8, 0x3a3045, 0.45);
@@ -493,7 +506,13 @@ window.addEventListener('keyup', (e) => {
 });
 canvas.addEventListener('mousedown', (e) => { if (e.button === 0) firing = true; });
 window.addEventListener('mouseup', (e) => { if (e.button === 0) firing = false; });
-canvas.addEventListener('mousemove', (e) => {
+
+// Camera-rotation rates (keyboard-driven so trackpad users don't have to
+// fight pointer lock). Q/E rotate yaw left/right; R/F tilt pitch up/down.
+const YAW_RATE = 2.4;          // rad/s when Q or E held
+const PITCH_RATE = 1.4;        // rad/s when R or F held
+
+window.addEventListener('mousemove', (e) => {
   const rect = canvas.getBoundingClientRect();
   mouseAim.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   mouseAim.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -683,6 +702,14 @@ function animate(time) {
   const me = players.get(myId);
   if (me) {
     if ((phase === 'playing' || phase === 'countdown') && !me.dead) {
+      // Camera rotation via keyboard (trackpad-friendly).
+      if (keys['KeyQ']) cameraYaw   += YAW_RATE * dt;
+      if (keys['KeyE']) cameraYaw   -= YAW_RATE * dt;
+      if (keys['KeyR']) cameraPitch += PITCH_RATE * dt;
+      if (keys['KeyF']) cameraPitch -= PITCH_RATE * dt;
+      if (cameraPitch < PITCH_MIN) cameraPitch = PITCH_MIN;
+      if (cameraPitch > PITCH_MAX) cameraPitch = PITCH_MAX;
+
       let mx = 0, mz = 0;
       if (keys['KeyW'] || keys['ArrowUp'])    mz -= 1;
       if (keys['KeyS'] || keys['ArrowDown'])  mz += 1;
@@ -690,8 +717,13 @@ function animate(time) {
       if (keys['KeyD'] || keys['ArrowRight']) mx += 1;
       const ml = Math.hypot(mx, mz);
       if (ml > 0) { mx /= ml; mz /= ml; }
-      const dx = mx * PLAYER_SPEED * dt;
-      const dz = mz * PLAYER_SPEED * dt;
+      // Movement is camera-relative: rotate input vector by cameraYaw so W is
+      // always "where the camera is looking" regardless of view rotation.
+      const cy = Math.cos(cameraYaw), sy = Math.sin(cameraYaw);
+      const wx = mx * cy + mz * sy;
+      const wz = -mx * sy + mz * cy;
+      const dx = wx * PLAYER_SPEED * dt;
+      const dz = wz * PLAYER_SPEED * dt;
 
       const oldX = me.x, oldZ = me.z;
       if (phase === 'playing' && (dx !== 0 || dz !== 0)) {
@@ -710,12 +742,16 @@ function animate(time) {
         }
       }
 
-      // Aim & facing
+      // Aim & facing — face the floor projection of the cursor. If the cursor
+      // somehow doesn't intersect the floor (extreme camera pitch), fall back
+      // to the camera's forward direction.
       const aim = getMouseAim(currentY(me));
       if (aim) {
         me.ry = Math.atan2(aim.x - me.x, aim.z - me.z);
       } else if (ml > 0) {
-        me.ry = Math.atan2(mx, mz);
+        me.ry = Math.atan2(wx, wz);
+      } else {
+        me.ry = cameraYaw;
       }
       const meY = currentY(me);
       me.mesh.position.set(me.x, meY, me.z);
@@ -779,18 +815,18 @@ function animate(time) {
     }
   }
 
-  // Camera follow — adjusts to floor Y
+  // Camera follow — pivot orbits player's chest, mouse-look drives its rotation.
   if (me) {
     const meY = currentY(me);
-    const targetX = me.x;
-    const targetY = meY + 3.5;
-    const targetZ = me.z + 6.0;
-    camera.position.lerp(tmpVec.set(targetX, targetY, targetZ), Math.min(1, dt * 5));
-    camera.lookAt(me.x, meY + 1.0, me.z - 2.0);
+    cameraPivot.position.lerp(
+      tmpVec.set(me.x, meY + 1.4, me.z),
+      Math.min(1, dt * 12),
+    );
+    cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
     if (!me.dead) updateOcclusion(me, dt);
   } else {
-    camera.position.set(0, 5, 14);
-    camera.lookAt(0, 1, 0);
+    cameraPivot.position.set(0, 1.4, 0);
+    cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
   }
 
   // Timer / countdown / death UI
