@@ -140,3 +140,28 @@ button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .countdown.hidden { display: none; }
 .countdown.go { color: #7bff5c; }
+
+/* Death overlay */
+.death-overlay {
+  position: fixed; inset: 0; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(60, 0, 12, 0.35);
+  backdrop-filter: blur(2px);
+  z-index: 12;
+  animation: deathPulse 1.4s ease-in-out infinite;
+}
+.death-overlay.hidden { display: none; }
+.death-panel {
+  background: rgba(20, 0, 8, 0.85);
+  border: 1px solid rgba(255, 60, 80, 0.4);
+  border-radius: 16px; padding: 28px 36px;
+  text-align: center;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+.death-title { font-size: 32px; font-weight: 800; color: #ff5c70; }
+.death-sub { margin-top: 8px; font-size: 16px; color: #c8a8b4; }
+.death-sub span { color: #fff; font-weight: 700; font-variant-numeric: tabular-nums; }
+@keyframes deathPulse {
+  0%, 100% { background: rgba(60, 0, 12, 0.30); }
+  50%      { background: rgba(80, 0, 16, 0.40); }
+}

@@ -1,55 +1,63 @@
 import * as THREE from 'three';
 
-// Floor painter: a CanvasTexture mapped onto the floor mesh.
-// Paint stamps are circular soft-edge brushes. The pixel grid is also used
-// for owner-color sampling so that we can enforce the "only walk on your color"
-// rule (we keep a parallel Uint8Array of owner ids).
+// Multi-floor floor painter. Each storey gets its own CanvasTexture (visual)
+// and its own owner-id grid (for the death/walk-restriction sample).
 export class Painter {
-  constructor({ floorSize, resolution = 1024, gridResolution = 256 }) {
+  constructor({ floorSize, floors, floorYs, resolution = 1024, gridResolution = 256 }) {
     this.floorSize = floorSize;
+    this.floors = floors;
     this.resolution = resolution;
     this.gridResolution = gridResolution;
+    this.floorYs = floorYs;       // array of length `floors`
 
-    // Visible canvas (high res for nice paint look)
-    this.canvas = document.createElement('canvas');
-    this.canvas.width = resolution;
-    this.canvas.height = resolution;
-    this.ctx = this.canvas.getContext('2d');
-    this.clearCanvas();
+    this.canvases = [];
+    this.ctxs = [];
+    this.textures = [];
+    this.meshes = [];
+    this.grids = [];
 
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.anisotropy = 8;
+    for (let f = 0; f < floors; f++) {
+      const c = document.createElement('canvas');
+      c.width = resolution; c.height = resolution;
+      const ctx = c.getContext('2d');
+      this.canvases.push(c);
+      this.ctxs.push(ctx);
 
-    // Logical owner grid (low res), maps cell -> player id (0 = empty)
-    this.grid = new Uint8Array(gridResolution * gridResolution);
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      this.textures.push(tex);
 
-    // Build floor mesh
-    const geo = new THREE.PlaneGeometry(floorSize, floorSize, 1, 1);
-    const mat = new THREE.MeshStandardMaterial({
-      map: this.texture,
-      roughness: 0.65,
-      metalness: 0.0,
-      transparent: true,
-    });
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.y = 0.01;
-    this.mesh.receiveShadow = true;
+      const mat = new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: 0.65,
+        metalness: 0.0,
+        transparent: true,
+      });
+      const geo = new THREE.PlaneGeometry(floorSize, floorSize, 1, 1);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = floorYs[f] + 0.012;
+      mesh.receiveShadow = true;
+      mesh.userData.floor = f;
+      this.meshes.push(mesh);
+
+      this.grids.push(new Uint8Array(gridResolution * gridResolution));
+    }
   }
 
-  clearCanvas() {
-    // Transparent floor: untouched cells show the wood base under it
-    this.ctx.clearRect(0, 0, this.resolution, this.resolution);
-  }
+  // Convenience: get all the floor meshes (for raycaster / scene.add).
+  getMeshes() { return this.meshes; }
+  meshForFloor(f) { return this.meshes[f]; }
 
   reset() {
-    this.clearCanvas();
-    this.grid.fill(0);
-    this.texture.needsUpdate = true;
+    for (let f = 0; f < this.floors; f++) {
+      this.ctxs[f].clearRect(0, 0, this.resolution, this.resolution);
+      this.grids[f].fill(0);
+      this.textures[f].needsUpdate = true;
+    }
   }
 
-  // World coords (x in [-S/2, S/2], z in [-S/2, S/2]) -> canvas px
   worldToPx(x, z) {
     const u = (x + this.floorSize / 2) / this.floorSize;
     const v = (z + this.floorSize / 2) / this.floorSize;
@@ -65,26 +73,25 @@ export class Painter {
     };
   }
 
-  // Paint a soft-edge circle and stamp owner id into grid.
-  paint(x, z, radiusMeters, color, ownerId) {
+  paint(x, z, radiusMeters, colorHex, ownerId, floorIdx) {
+    if (floorIdx < 0 || floorIdx >= this.floors) return;
+    const ctx = this.ctxs[floorIdx];
     const { px, py } = this.worldToPx(x, z);
     const rPx = (radiusMeters / this.floorSize) * this.resolution;
 
-    const grad = this.ctx.createRadialGradient(px, py, 0, px, py, rPx);
-    grad.addColorStop(0, this.colorWithAlpha(color, 1.0));
-    grad.addColorStop(0.7, this.colorWithAlpha(color, 0.9));
-    grad.addColorStop(1, this.colorWithAlpha(color, 0));
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, rPx);
+    grad.addColorStop(0, this.colorWithAlpha(colorHex, 1.0));
+    grad.addColorStop(0.7, this.colorWithAlpha(colorHex, 0.92));
+    grad.addColorStop(1, this.colorWithAlpha(colorHex, 0));
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, rPx, 0, Math.PI * 2);
+    ctx.fill();
 
-    this.ctx.globalCompositeOperation = 'source-over';
-    this.ctx.fillStyle = grad;
-    this.ctx.beginPath();
-    this.ctx.arc(px, py, rPx, 0, Math.PI * 2);
-    this.ctx.fill();
-
-    // Stamp grid
+    const grid = this.grids[floorIdx];
     const cellsPerMeter = this.gridResolution / this.floorSize;
-    const rc = radiusMeters * cellsPerMeter * 0.85; // slight inset so the
-    // visual edge is softer than the playable edge
+    const rc = radiusMeters * cellsPerMeter * 0.85;
     const { cx, cz } = this.worldToCell(x, z);
     const r2 = rc * rc;
     const minX = Math.max(0, Math.floor(cx - rc));
@@ -96,23 +103,23 @@ export class Painter {
         const dx = xi - cx;
         const dz = zi - cz;
         if (dx * dx + dz * dz <= r2) {
-          this.grid[zi * this.gridResolution + xi] = ownerId;
+          grid[zi * this.gridResolution + xi] = ownerId;
         }
       }
     }
 
-    this.texture.needsUpdate = true;
+    this.textures[floorIdx].needsUpdate = true;
   }
 
-  // Returns owner id at world (x, z), or 0
-  ownerAt(x, z) {
+  ownerAt(x, z, floorIdx) {
+    if (floorIdx < 0 || floorIdx >= this.floors) return 0;
+    const grid = this.grids[floorIdx];
     const { cx, cz } = this.worldToCell(x, z);
     if (cx < 0 || cx >= this.gridResolution || cz < 0 || cz >= this.gridResolution) return 0;
-    return this.grid[cz * this.gridResolution + cx];
+    return grid[cz * this.gridResolution + cx];
   }
 
   colorWithAlpha(hex, a) {
-    // Accepts #rrggbb
     const v = parseInt(hex.slice(1), 16);
     const r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
     return `rgba(${r}, ${g}, ${b}, ${a})`;

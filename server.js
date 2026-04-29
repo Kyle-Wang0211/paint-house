@@ -5,50 +5,51 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 
-// Game configuration
-const FLOOR_SIZE = 30;        // meters (square floor centered at origin)
-const GRID = 256;             // server-side area grid resolution
-const ROUND_SECONDS = 60;
+// ----- World layout -----
+const FLOOR_SIZE = 40;          // meters per side, square footprint
+const FLOORS = 2;               // 0 = ground, 1 = upstairs
+const FLOOR2_Y = 4.6;           // height of the upstairs slab
+const GRID = 256;
+const ROUND_SECONDS = 75;
 const COUNTDOWN_SECONDS = 3;
+const RESPAWN_SECONDS = 3;
 
-// Distinct hues for up to 8 players (HSL strings, also used by clients)
+// Stair ramp: a single straight ramp running along +Z, going from floor 0
+// at z = -RAMP_LEN/2 to floor 1 at z = RAMP_LEN/2. Centered at x = RAMP_X.
+const RAMP_X_MIN = -2.5;
+const RAMP_X_MAX = 2.5;
+const RAMP_Z_BOTTOM = -2;       // ground entrance
+const RAMP_Z_TOP = 8;           // upstairs landing
+const RAMP_LEN = RAMP_Z_TOP - RAMP_Z_BOTTOM;
+
 const PLAYER_COLORS = [
-  '#ff3b6b', // red-pink
-  '#36c2ff', // cyan
-  '#ffd23a', // yellow
-  '#7bff5c', // green
-  '#a85cff', // purple
-  '#ff8a3a', // orange
-  '#3affd4', // mint
-  '#ff5cf0', // magenta
+  '#ff3b6b', '#36c2ff', '#ffd23a', '#7bff5c',
+  '#a85cff', '#ff8a3a', '#3affd4', '#ff5cf0',
 ];
 
 // ----- Game state -----
-const players = new Map(); // id -> { id, name, color, ws, x, z, ry, alive }
+const players = new Map();      // id -> player
 let nextId = 1;
-
-let phase = 'lobby';   // 'lobby' | 'countdown' | 'playing' | 'ended'
-let phaseEndsAt = 0;   // ms timestamp
+let phase = 'lobby';            // 'lobby' | 'countdown' | 'playing' | 'ended'
+let phaseEndsAt = 0;
 let lastRanking = null;
 
-// 2D grid: each cell holds player id (0 = unpainted)
-const grid = new Uint8Array(GRID * GRID);
+const grids = [
+  new Uint8Array(GRID * GRID),  // floor 0
+  new Uint8Array(GRID * GRID),  // floor 1
+];
 
-function clearGrid() {
-  grid.fill(0);
-}
+function clearGrids() { for (const g of grids) g.fill(0); }
 
 function worldToCell(x, z) {
-  // x,z in [-FLOOR_SIZE/2, FLOOR_SIZE/2]
   const u = (x + FLOOR_SIZE / 2) / FLOOR_SIZE;
   const v = (z + FLOOR_SIZE / 2) / FLOOR_SIZE;
-  const cx = Math.floor(u * GRID);
-  const cz = Math.floor(v * GRID);
-  return { cx, cz };
+  return { cx: Math.floor(u * GRID), cz: Math.floor(v * GRID) };
 }
 
-function stampPaint(playerId, x, z, r) {
-  // r in meters → cells
+function stampPaint(playerId, x, z, r, floor) {
+  if (floor < 0 || floor >= FLOORS) return;
+  const grid = grids[floor];
   const cellsPerMeter = GRID / FLOOR_SIZE;
   const rc = r * cellsPerMeter;
   const { cx, cz } = worldToCell(x, z);
@@ -68,34 +69,41 @@ function stampPaint(playerId, x, z, r) {
   }
 }
 
-function sampleColorAt(x, z) {
+function sampleColorAt(x, z, floor) {
+  if (floor < 0 || floor >= FLOORS) return 0;
   const { cx, cz } = worldToCell(x, z);
   if (cx < 0 || cx >= GRID || cz < 0 || cz >= GRID) return 0;
-  return grid[cz * GRID + cx];
+  return grids[floor][cz * GRID + cx];
+}
+
+function isOnRamp(x, z) {
+  return x >= RAMP_X_MIN && x <= RAMP_X_MAX && z >= RAMP_Z_BOTTOM && z <= RAMP_Z_TOP;
+}
+
+function rampY(z) {
+  const t = (z - RAMP_Z_BOTTOM) / RAMP_LEN;
+  return Math.max(0, Math.min(1, t)) * FLOOR2_Y;
 }
 
 function computeScores() {
-  // count cells per player id
   const counts = new Map();
-  for (let i = 0; i < grid.length; i++) {
-    const id = grid[i];
-    if (id === 0) continue;
-    counts.set(id, (counts.get(id) || 0) + 1);
+  for (const grid of grids) {
+    for (let i = 0; i < grid.length; i++) {
+      const id = grid[i];
+      if (id === 0) continue;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
   }
-  const total = GRID * GRID;
+  const total = GRID * GRID * FLOORS;
   const result = [];
   for (const [id, c] of counts) {
     const player = players.get(id);
     if (!player) continue;
     result.push({
-      id,
-      name: player.name,
-      color: player.color,
-      cells: c,
-      percent: (c / total) * 100,
+      id, name: player.name, color: player.color,
+      cells: c, percent: (c / total) * 100,
     });
   }
-  // include zero-score players too
   for (const p of players.values()) {
     if (!result.find(r => r.id === p.id)) {
       result.push({ id: p.id, name: p.name, color: p.color, cells: 0, percent: 0 });
@@ -118,7 +126,7 @@ function send(player, msg) {
 }
 
 function publicPlayer(p) {
-  return { id: p.id, name: p.name, color: p.color, x: p.x, z: p.z, ry: p.ry };
+  return { id: p.id, name: p.name, color: p.color, x: p.x, z: p.z, ry: p.ry, floor: p.floor, dead: !!p.dead };
 }
 
 function pickColor() {
@@ -127,27 +135,55 @@ function pickColor() {
   return PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)];
 }
 
+function spawnPosition(seed) {
+  // Spread players around floor 0 perimeter at distinct angles
+  const angle = (seed / Math.max(1, players.size || 1)) * Math.PI * 2;
+  return {
+    x: Math.cos(angle) * (FLOOR_SIZE * 0.32),
+    z: Math.sin(angle) * (FLOOR_SIZE * 0.32),
+    floor: 0,
+    ry: angle + Math.PI,
+  };
+}
+
+function killPlayer(player, killerId) {
+  if (player.dead) return;
+  player.dead = true;
+  player.deadUntil = Date.now() + RESPAWN_SECONDS * 1000;
+  player.killerId = killerId || 0;
+  send(player, { type: 'died', killerId: killerId || 0, respawnIn: RESPAWN_SECONDS });
+  broadcast({ type: 'playerDied', id: player.id, killerId: killerId || 0 }, player.id);
+}
+
+function respawnPlayer(player) {
+  let i = 0;
+  for (const p of players.values()) {
+    if (p.id === player.id) break;
+    i++;
+  }
+  const sp = spawnPosition(i + Math.random() * 0.5);
+  player.x = sp.x; player.z = sp.z; player.floor = 0; player.ry = sp.ry;
+  player.dead = false;
+  player.deadUntil = 0;
+  send(player, { type: 'respawn', x: player.x, z: player.z, floor: 0, ry: player.ry });
+  broadcast({ type: 'playerRespawn', id: player.id, x: player.x, z: player.z, floor: 0, ry: player.ry }, player.id);
+}
+
 // ----- Phase transitions -----
 function startCountdown() {
   if (phase !== 'lobby' && phase !== 'ended') return;
   if (players.size < 1) return;
-  clearGrid();
-  // Spread players to spawn positions
-  const n = players.size;
+  clearGrids();
   let i = 0;
   for (const p of players.values()) {
-    const angle = (i / n) * Math.PI * 2;
-    p.x = Math.cos(angle) * (FLOOR_SIZE * 0.3);
-    p.z = Math.sin(angle) * (FLOOR_SIZE * 0.3);
-    p.ry = angle + Math.PI;
-    i++;
+    const sp = spawnPosition(i++);
+    p.x = sp.x; p.z = sp.z; p.floor = 0; p.ry = sp.ry;
+    p.dead = false; p.deadUntil = 0;
   }
   phase = 'countdown';
   phaseEndsAt = Date.now() + COUNTDOWN_SECONDS * 1000;
   broadcast({
-    type: 'phase',
-    phase,
-    endsAt: phaseEndsAt,
+    type: 'phase', phase, endsAt: phaseEndsAt,
     duration: COUNTDOWN_SECONDS,
     players: [...players.values()].map(publicPlayer),
   });
@@ -156,33 +192,22 @@ function startCountdown() {
 function startRound() {
   phase = 'playing';
   phaseEndsAt = Date.now() + ROUND_SECONDS * 1000;
-  broadcast({
-    type: 'phase',
-    phase,
-    endsAt: phaseEndsAt,
-    duration: ROUND_SECONDS,
-  });
+  broadcast({ type: 'phase', phase, endsAt: phaseEndsAt, duration: ROUND_SECONDS });
 }
 
 function endRound() {
   phase = 'ended';
   lastRanking = computeScores();
   phaseEndsAt = Date.now() + 8000;
-  broadcast({
-    type: 'phase',
-    phase,
-    endsAt: phaseEndsAt,
-    ranking: lastRanking,
-  });
+  broadcast({ type: 'phase', phase, endsAt: phaseEndsAt, ranking: lastRanking });
 }
 
 function backToLobby() {
   phase = 'lobby';
-  clearGrid();
+  clearGrids();
   broadcast({ type: 'phase', phase });
 }
 
-// Server tick
 setInterval(() => {
   const now = Date.now();
   if (phase === 'countdown' && now >= phaseEndsAt) startRound();
@@ -190,7 +215,9 @@ setInterval(() => {
   else if (phase === 'ended' && now >= phaseEndsAt) backToLobby();
 
   if (phase === 'playing') {
-    // periodic score snapshot
+    for (const p of players.values()) {
+      if (p.dead && now >= p.deadUntil) respawnPlayer(p);
+    }
     broadcast({
       type: 'scores',
       remaining: Math.max(0, phaseEndsAt - now),
@@ -216,21 +243,22 @@ wss.on('connection', (ws) => {
   const player = {
     id, color, ws,
     name: `玩家${id}`,
-    x: 0, z: 0, ry: 0,
-    lastMoveAt: 0, lastPaintAt: 0,
+    x: 0, z: 0, floor: 0, ry: 0,
+    dead: false, deadUntil: 0,
+    lastMoveAt: 0, lastPaintAt: 0, lastFootprintAt: 0,
   };
   players.set(id, player);
 
   send(player, {
     type: 'welcome',
-    id, color,
-    name: player.name,
-    floorSize: FLOOR_SIZE,
+    id, color, name: player.name,
+    floorSize: FLOOR_SIZE, floor2Y: FLOOR2_Y,
+    ramp: { xMin: RAMP_X_MIN, xMax: RAMP_X_MAX, zMin: RAMP_Z_BOTTOM, zMax: RAMP_Z_TOP },
     grid: GRID,
     players: [...players.values()].map(publicPlayer),
-    phase,
-    phaseEndsAt,
+    phase, phaseEndsAt,
     ranking: lastRanking,
+    respawnSeconds: RESPAWN_SECONDS,
   });
   broadcast({ type: 'playerJoin', player: publicPlayer(player) }, id);
 
@@ -245,46 +273,65 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'move') {
+      if (player.dead) return;
       const now = Date.now();
       if (now - player.lastMoveAt < 30) return;
       player.lastMoveAt = now;
       const nx = clamp(+msg.x, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const nz = clamp(+msg.z, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const ry = +msg.ry || 0;
-      // During play: prevent moving onto enemy color
-      if (phase === 'playing') {
-        const colorId = sampleColorAt(nx, nz);
+      const reqFloor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
+
+      // Death check (only on actual floor surfaces, not ramp)
+      if (phase === 'playing' && !isOnRamp(nx, nz)) {
+        const colorId = sampleColorAt(nx, nz, reqFloor);
         if (colorId !== 0 && colorId !== player.id) {
-          // reject move; tell client where they actually are
-          send(player, { type: 'snapBack', x: player.x, z: player.z });
+          killPlayer(player, colorId);
           return;
         }
       }
-      player.x = nx; player.z = nz; player.ry = ry;
+
+      player.x = nx; player.z = nz; player.floor = reqFloor; player.ry = ry;
       broadcast({
         type: 'playerMove',
-        id: player.id, x: nx, z: nz, ry,
+        id: player.id, x: nx, z: nz, ry, floor: reqFloor,
       }, player.id);
       return;
     }
 
     if (msg.type === 'paint' && phase === 'playing') {
+      if (player.dead) return;
       const now = Date.now();
       if (now - player.lastPaintAt < 50) return;
       player.lastPaintAt = now;
       const x = clamp(+msg.x, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const z = clamp(+msg.z, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
       const r = clamp(+msg.r || 0.6, 0.1, 1.5);
-      stampPaint(player.id, x, z, r);
-      broadcast({ type: 'paint', id: player.id, x, z, r });
+      const floor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
+      stampPaint(player.id, x, z, r, floor);
+      broadcast({ type: 'paint', id: player.id, x, z, r, floor });
+      return;
+    }
+
+    if (msg.type === 'footprint' && phase === 'playing') {
+      if (player.dead) return;
+      const now = Date.now();
+      if (now - player.lastFootprintAt < 80) return;
+      player.lastFootprintAt = now;
+      const x = clamp(+msg.x, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
+      const z = clamp(+msg.z, -FLOOR_SIZE / 2, FLOOR_SIZE / 2);
+      const r = clamp(+msg.r || 0.32, 0.15, 0.5);
+      const floor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
+      stampPaint(player.id, x, z, r, floor);
+      broadcast({ type: 'footprint', id: player.id, x, z, r, floor });
       return;
     }
 
     if (msg.type === 'decal' && phase === 'playing') {
+      if (player.dead) return;
       const now = Date.now();
       if (now - player.lastPaintAt < 50) return;
       player.lastPaintAt = now;
-      // Decals are visual-only; no grid update, just rebroadcast to others.
       broadcast({
         type: 'decal',
         id: player.id,
@@ -306,7 +353,7 @@ wss.on('connection', (ws) => {
     broadcast({ type: 'playerLeave', id });
     if (players.size === 0) {
       phase = 'lobby';
-      clearGrid();
+      clearGrids();
     }
   });
 });

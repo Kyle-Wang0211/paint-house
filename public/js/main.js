@@ -3,6 +3,10 @@ import { buildHouse } from './scene.js';
 import { Painter } from './painter.js';
 import { Network } from './network.js';
 
+// ----- World constants (must match server) -----
+const FLOOR_SIZE = 40;
+const FLOOR2_Y = 4.6;
+
 // ----- DOM refs -----
 const $ = (id) => document.getElementById(id);
 const overlay = $('overlay');
@@ -31,44 +35,46 @@ renderer.toneMappingExposure = 1.0;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111118);
-scene.fog = new THREE.Fog(0x111118, 30, 80);
+scene.fog = new THREE.Fog(0x111118, 40, 110);
 
 const camera = new THREE.PerspectiveCamera(55, 2, 0.1, 200);
 
-// Lights — keep total intensity moderate so ACES tonemapping doesn't crush
-// everything to a uniform pale gray.
+// Lights — moderate so ACES doesn't crush colors.
 const hemi = new THREE.HemisphereLight(0xb8c5d8, 0x3a3045, 0.45);
 scene.add(hemi);
 const ambient = new THREE.AmbientLight(0xffffff, 0.08);
 scene.add(ambient);
 const sun = new THREE.DirectionalLight(0xfff1d0, 0.75);
-sun.position.set(15, 30, 8);
+sun.position.set(20, 40, 12);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -20;
-sun.shadow.camera.right = 20;
-sun.shadow.camera.top = 20;
-sun.shadow.camera.bottom = -20;
-sun.shadow.camera.near = 1;
-sun.shadow.camera.far = 80;
+sun.shadow.camera.left = -25; sun.shadow.camera.right = 25;
+sun.shadow.camera.top = 25; sun.shadow.camera.bottom = -25;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 100;
 sun.shadow.bias = -0.0005;
 scene.add(sun);
 
 // World
-const FLOOR_SIZE = 30;
-const { group: house, colliders, fadables } = buildHouse(FLOOR_SIZE);
+const houseData = buildHouse(FLOOR_SIZE, FLOOR2_Y);
+const { group: house, colliders, fadables, ramp: rampDef } = houseData;
 scene.add(house);
-// Each fadable starts fully opaque; opacity is lerped each frame in updateOcclusion().
+
+const painter = new Painter({
+  floorSize: FLOOR_SIZE,
+  floors: 2,
+  floorYs: [0, FLOOR2_Y],
+  resolution: 1024,
+  gridResolution: 256,
+});
+for (const m of painter.getMeshes()) scene.add(m);
+
 for (const m of fadables) {
   m.userData.fadeTarget = 1.0;
   m.material.transparent = false;
   m.material.opacity = 1.0;
 }
-// Stable index so wall-paint events can refer to the same mesh across clients.
-fadables.forEach((m, i) => { m.userData.fadeIndex = i; });
 
 // ---------- Wall splat (decal) painter ----------
-// A circular soft-edge texture, white so we can tint per player via material.color.
 const splatTexture = (() => {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
@@ -88,10 +94,10 @@ const splatTexture = (() => {
 
 const wallSplatGroup = new THREE.Group();
 scene.add(wallSplatGroup);
-const MAX_WALL_SPLATS = 800; // ring buffer to keep memory bounded
+const MAX_WALL_SPLATS = 1000;
 const wallSplats = [];
-
 const SPLAT_PLANE_NORMAL = new THREE.Vector3(0, 0, 1);
+
 function spawnWallSplat(point, normal, colorHex, sizeMeters = 1.1) {
   const mat = new THREE.MeshBasicMaterial({
     map: splatTexture,
@@ -104,9 +110,6 @@ function spawnWallSplat(point, normal, colorHex, sizeMeters = 1.1) {
   });
   const geo = new THREE.PlaneGeometry(sizeMeters, sizeMeters);
   const mesh = new THREE.Mesh(geo, mat);
-  // Offset slightly off the surface to avoid z-fight, then orient the plane
-  // so its +Z (textured face) points along the surface normal — i.e. out of
-  // the wall toward the room.
   mesh.position.copy(point).addScaledVector(normal, 0.015);
   mesh.quaternion.setFromUnitVectors(SPLAT_PLANE_NORMAL, normal);
   mesh.rotateZ(Math.random() * Math.PI * 2);
@@ -118,7 +121,6 @@ function spawnWallSplat(point, normal, colorHex, sizeMeters = 1.1) {
     old.geometry.dispose();
     old.material.dispose();
   }
-  return mesh;
 }
 
 function clearWallSplats() {
@@ -129,16 +131,17 @@ function clearWallSplats() {
   }
   wallSplats.length = 0;
 }
-const painter = new Painter({ floorSize: FLOOR_SIZE, resolution: 1024, gridResolution: 256 });
-scene.add(painter.mesh);
 
 // ----- Game state -----
-const players = new Map(); // id -> { id, name, color, x, z, ry, mesh, nameSprite }
+const players = new Map();
 let myId = null;
 let myColor = '#ffffff';
 let phase = 'lobby';
 let phaseEndsAt = 0;
 let currentRanking = null;
+let respawnSeconds = 3;
+let myRespawnAt = 0;
+let myDeadKillerId = 0;
 
 // ----- Avatars -----
 function colorToInt(hex) { return parseInt(hex.slice(1), 16); }
@@ -151,20 +154,16 @@ function createAvatar(player) {
     emissive: colorToInt(player.color), emissiveIntensity: 0.15,
   });
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.7, 6, 12), bodyMat);
-  body.position.y = 0.7;
-  body.castShadow = true;
+  body.position.y = 0.7; body.castShadow = true;
   group.add(body);
 
-  // Head
   const head = new THREE.Mesh(
     new THREE.SphereGeometry(0.22, 16, 12),
     new THREE.MeshStandardMaterial({ color: 0xffe2c2, roughness: 0.7 }),
   );
-  head.position.y = 1.45;
-  head.castShadow = true;
+  head.position.y = 1.45; head.castShadow = true;
   group.add(head);
 
-  // Direction indicator (a little nose so we can see facing)
   const nose = new THREE.Mesh(
     new THREE.ConeGeometry(0.08, 0.18, 8),
     new THREE.MeshStandardMaterial({ color: colorToInt(player.color) }),
@@ -173,17 +172,14 @@ function createAvatar(player) {
   nose.position.set(0, 1.45, 0.22);
   group.add(nose);
 
-  // Tank pack
   const tank = new THREE.Mesh(
     new THREE.CylinderGeometry(0.14, 0.14, 0.5, 12),
     new THREE.MeshStandardMaterial({ color: colorToInt(player.color), roughness: 0.3, metalness: 0.7 }),
   );
-  tank.position.set(-0.18, 0.95, -0.32);
-  tank.rotation.x = 0.2;
+  tank.position.set(-0.18, 0.95, -0.32); tank.rotation.x = 0.2;
   group.add(tank);
   const tank2 = tank.clone(); tank2.position.x = 0.18; group.add(tank2);
 
-  // Name tag
   const nameSprite = makeNameSprite(player.name, player.color);
   nameSprite.position.set(0, 2.05, 0);
   group.add(nameSprite);
@@ -202,7 +198,6 @@ function makeNameSprite(name, color) {
   ctx.font = 'bold 28px -apple-system, "PingFang SC", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Background pill
   const text = name;
   const w = ctx.measureText(text).width + 28;
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
@@ -242,17 +237,32 @@ function addOrUpdatePlayer(p) {
   let existing = players.get(p.id);
   if (!existing) {
     const view = createAvatar(p);
-    existing = { ...p, mesh: view.mesh, body: view.body, nameSprite: view.nameSprite, tx: p.x, tz: p.z, try: p.ry || 0 };
+    existing = {
+      ...p,
+      mesh: view.mesh, body: view.body, nameSprite: view.nameSprite,
+      tx: p.x, tz: p.z, try: p.ry || 0,
+      tFloor: p.floor || 0, floor: p.floor || 0,
+      dead: !!p.dead,
+      lastFootprintAt: 0, lastFootprintX: p.x, lastFootprintZ: p.z,
+    };
     players.set(p.id, existing);
   } else {
     existing.tx = p.x; existing.tz = p.z; existing.try = p.ry || 0;
+    if (Number.isFinite(p.floor)) existing.tFloor = p.floor;
+    if (p.dead !== undefined) existing.dead = !!p.dead;
     if (p.name && p.name !== existing.name) {
       existing.name = p.name;
       refreshNameSprite(existing);
     }
   }
+  setAvatarVisibility(existing);
   updatePlayersUI();
   return existing;
+}
+
+function setAvatarVisibility(p) {
+  if (!p.mesh) return;
+  p.mesh.visible = !p.dead;
 }
 
 function removePlayer(id) {
@@ -281,27 +291,19 @@ const net = new Network();
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 net.connect(wsUrl);
 
-net.on('open', () => {
-  statusEl.textContent = '已连接，等待加入…';
-});
-net.on('close', () => {
-  statusEl.textContent = '与服务器断开，请刷新页面';
-});
+net.on('open', () => statusEl.textContent = '已连接，等待加入…');
+net.on('close', () => statusEl.textContent = '与服务器断开，请刷新页面');
 net.on('welcome', (m) => {
-  myId = m.id;
-  myColor = m.color;
+  myId = m.id; myColor = m.color;
+  respawnSeconds = m.respawnSeconds || 3;
   for (const p of m.players) addOrUpdatePlayer(p);
-  // ensure self exists
   if (!players.has(myId)) {
-    addOrUpdatePlayer({ id: myId, name: m.name, color: m.color, x: 0, z: 0, ry: 0 });
+    addOrUpdatePlayer({ id: myId, name: m.name, color: m.color, x: 0, z: 0, ry: 0, floor: 0 });
   }
   applyPhase(m.phase, m.phaseEndsAt, m.ranking);
-  // Pre-fill name input
   if (nameInput.value === '') nameInput.value = m.name;
 });
-net.on('playerJoin', (m) => {
-  addOrUpdatePlayer(m.player);
-});
+net.on('playerJoin', (m) => addOrUpdatePlayer(m.player));
 net.on('playerLeave', (m) => removePlayer(m.id));
 net.on('playerName', (m) => {
   const p = players.get(m.id);
@@ -310,14 +312,19 @@ net.on('playerName', (m) => {
 net.on('playerMove', (m) => {
   const p = players.get(m.id);
   if (!p) return;
-  p.tx = m.x; p.tz = m.z; p.try = m.ry;
+  p.tx = m.x; p.tz = m.z; p.try = m.ry; p.tFloor = m.floor || 0;
 });
 net.on('paint', (m) => {
   const owner = players.get(m.id);
   if (!owner) return;
-  // Skip paints we already applied locally (own paints)
   if (m.id === myId) return;
-  painter.paint(m.x, m.z, m.r, owner.color, m.id);
+  painter.paint(m.x, m.z, m.r, owner.color, m.id, m.floor || 0);
+});
+net.on('footprint', (m) => {
+  const owner = players.get(m.id);
+  if (!owner) return;
+  if (m.id === myId) return;
+  painter.paint(m.x, m.z, m.r, owner.color, m.id, m.floor || 0);
 });
 net.on('decal', (m) => {
   const owner = players.get(m.id);
@@ -326,9 +333,39 @@ net.on('decal', (m) => {
   spawnWallSplat(
     new THREE.Vector3(m.x, m.y, m.z),
     new THREE.Vector3(m.nx, m.ny, m.nz),
-    owner.color,
-    m.r,
+    owner.color, m.r,
   );
+});
+net.on('died', (m) => {
+  myRespawnAt = Date.now() + (m.respawnIn || respawnSeconds) * 1000;
+  myDeadKillerId = m.killerId || 0;
+  const me = players.get(myId);
+  if (me) { me.dead = true; setAvatarVisibility(me); }
+  // Camera shake / overlay handled in animate
+});
+net.on('respawn', (m) => {
+  const me = players.get(myId);
+  if (!me) return;
+  me.x = m.x; me.z = m.z; me.tx = m.x; me.tz = m.z;
+  me.floor = m.floor || 0; me.tFloor = me.floor;
+  me.ry = m.ry || 0; me.try = me.ry;
+  me.y = me.floor === 1 ? FLOOR2_Y : 0;
+  me.dead = false;
+  setAvatarVisibility(me);
+  myRespawnAt = 0;
+});
+net.on('playerDied', (m) => {
+  const p = players.get(m.id);
+  if (!p) return;
+  p.dead = true; setAvatarVisibility(p);
+});
+net.on('playerRespawn', (m) => {
+  const p = players.get(m.id);
+  if (!p) return;
+  p.x = m.x; p.z = m.z; p.tx = m.x; p.tz = m.z;
+  p.floor = m.floor; p.tFloor = m.floor; p.ry = m.ry; p.try = m.ry;
+  p.dead = false;
+  setAvatarVisibility(p);
 });
 net.on('phase', (m) => applyPhase(m.phase, m.endsAt, m.ranking, m));
 net.on('scores', (m) => {
@@ -336,17 +373,7 @@ net.on('scores', (m) => {
   phaseEndsAt = Date.now() + (m.remaining || 0);
   renderScoreboard(m.scores);
 });
-net.on('snapBack', (m) => {
-  // Server rejected our move. Snap me back.
-  const me = players.get(myId);
-  if (!me) return;
-  me.x = m.x; me.z = m.z;
-  me.tx = m.x; me.tz = m.z;
-  me.mesh.position.set(m.x, 0, m.z);
-});
-net.on('rejected', (m) => {
-  alert('无法加入：' + (m.reason || '未知原因'));
-});
+net.on('rejected', (m) => alert('无法加入：' + (m.reason || '未知原因')));
 
 function applyPhase(p, endsAt, ranking, fullMsg) {
   phase = p;
@@ -360,27 +387,31 @@ function applyPhase(p, endsAt, ranking, fullMsg) {
     painter.reset();
     clearWallSplats();
     crosshair.classList.remove('active');
+    hideDeath();
   } else if (p === 'countdown') {
     overlay.classList.add('hidden');
     result.classList.add('hidden');
     countdownEl.classList.remove('hidden');
     painter.reset();
     clearWallSplats();
-    // Snap players to their (server-spawned) positions
     if (fullMsg && fullMsg.players) {
       for (const sp of fullMsg.players) {
         const pp = players.get(sp.id);
         if (pp) {
           pp.x = sp.x; pp.z = sp.z; pp.ry = sp.ry || 0;
           pp.tx = sp.x; pp.tz = sp.z; pp.try = sp.ry || 0;
+          pp.floor = sp.floor || 0; pp.tFloor = pp.floor;
+          pp.dead = false;
           if (pp.mesh) {
-            pp.mesh.position.set(sp.x, 0, sp.z);
+            pp.mesh.position.set(sp.x, currentY(pp), sp.z);
             pp.mesh.rotation.y = sp.ry || 0;
           }
+          setAvatarVisibility(pp);
         }
       }
     }
     crosshair.classList.add('active');
+    hideDeath();
   } else if (p === 'playing') {
     overlay.classList.add('hidden');
     result.classList.add('hidden');
@@ -391,6 +422,7 @@ function applyPhase(p, endsAt, ranking, fullMsg) {
     crosshair.classList.remove('active');
     currentRanking = ranking || [];
     showResults(currentRanking);
+    hideDeath();
   }
 }
 
@@ -398,8 +430,7 @@ function showResults(ranking) {
   result.classList.remove('hidden');
   rankingEl.innerHTML = '';
   if (!ranking || ranking.length === 0) {
-    resultTitleEl.textContent = '本局结束';
-    return;
+    resultTitleEl.textContent = '本局结束'; return;
   }
   const winner = ranking[0];
   resultTitleEl.textContent = winner.id === myId ? '🏆 你赢了！' : `🏆 ${winner.name} 获胜`;
@@ -419,7 +450,6 @@ function showResults(ranking) {
 
 function renderScoreboard(scores) {
   scoreboardEl.innerHTML = '';
-  // Sort by id for stable order, but show top 4
   const sorted = [...scores].sort((a, b) => b.percent - a.percent);
   for (const s of sorted) {
     const item = document.createElement('div');
@@ -429,12 +459,28 @@ function renderScoreboard(scores) {
   }
 }
 
+// Death overlay (simple HTML)
+let deathEl = document.getElementById('death');
+if (!deathEl) {
+  deathEl = document.createElement('div');
+  deathEl.id = 'death';
+  deathEl.className = 'death-overlay hidden';
+  deathEl.innerHTML = `<div class="death-panel"><div class="death-title">💀 你被涂掉了</div><div class="death-sub">复活倒计时 <span id="deathTimer">3.0</span> 秒</div></div>`;
+  document.body.appendChild(deathEl);
+}
+const deathTimerEl = () => document.getElementById('deathTimer');
+
+function showDeath() { deathEl.classList.remove('hidden'); }
+function hideDeath() { deathEl.classList.add('hidden'); }
+
 // ----- Input -----
 const keys = {};
-let mouseAim = new THREE.Vector2(); // NDC
+let mouseAim = new THREE.Vector2();
 let firing = false;
 let lastSentPaintAt = 0;
 let lastSentMoveAt = 0;
+let lastSentFootprintAt = 0;
+let lastFootprintX = 0, lastFootprintZ = 0;
 
 window.addEventListener('keydown', (e) => {
   if (document.activeElement === nameInput) return;
@@ -445,107 +491,157 @@ window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
   if (e.code === 'Space') firing = false;
 });
-canvas.addEventListener('mousedown', (e) => {
-  if (e.button === 0) firing = true;
-});
-window.addEventListener('mouseup', (e) => {
-  if (e.button === 0) firing = false;
-});
+canvas.addEventListener('mousedown', (e) => { if (e.button === 0) firing = true; });
+window.addEventListener('mouseup', (e) => { if (e.button === 0) firing = false; });
 canvas.addEventListener('mousemove', (e) => {
   const rect = canvas.getBoundingClientRect();
   mouseAim.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   mouseAim.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 });
 
-// Lobby controls
 startBtn.addEventListener('click', () => {
   const name = (nameInput.value || '').trim();
   if (name) net.send({ type: 'name', name });
   net.send({ type: 'startRound' });
 });
-restartBtn.addEventListener('click', () => {
-  net.send({ type: 'startRound' });
-});
+restartBtn.addEventListener('click', () => net.send({ type: 'startRound' }));
 nameInput.addEventListener('change', () => {
   const name = (nameInput.value || '').trim();
   if (name) net.send({ type: 'name', name });
 });
 
-// ----- Movement & game loop -----
-const PLAYER_SPEED = 5.5;
-const PLAYER_RADIUS = 0.35;
-const PAINT_RADIUS = 0.65;
-const PAINT_REACH = 1.6;        // fallback when mouse is off-screen
-const MAX_PAINT_REACH = 9.0;    // mouse-aim spray distance cap
+// ----- Movement helpers -----
+const PLAYER_SPEED = 6.2;
+const PLAYER_RADIUS = 0.36;
+const PAINT_RADIUS = 0.7;
+const PAINT_REACH = 1.6;
+const MAX_PAINT_REACH = 11.0;
+const FOOTPRINT_STEP = 0.55;       // distance walked between footprint stamps
+const FOOTPRINT_RADIUS = 0.34;
 
+function isOnRamp(x, z) {
+  return x >= rampDef.xMin && x <= rampDef.xMax &&
+         z >= rampDef.zMin && z <= rampDef.zMax;
+}
+
+function rampYAt(z) {
+  const t = (z - rampDef.zMin) / (rampDef.zMax - rampDef.zMin);
+  return Math.max(0, Math.min(1, t)) * rampDef.topY;
+}
+
+function currentY(p) {
+  if (isOnRamp(p.x, p.z)) return rampYAt(p.z);
+  return p.floor === 1 ? FLOOR2_Y : 0;
+}
+
+function tryMove(me, dx, dz) {
+  const attempts = [[dx, dz], [dx, 0], [0, dz]];
+  for (const [ax, az] of attempts) {
+    const nx = me.x + ax;
+    const nz = me.z + az;
+    if (canStandAt(me, nx, nz)) {
+      me.x = nx; me.z = nz;
+      // Auto-determine floor from position
+      if (isOnRamp(nx, nz)) {
+        // remain on transitioning state — keep floor as last set; but commit
+        // floor change at endpoints
+        if (nz <= rampDef.zMin + 0.05 && me.floor !== 0) me.floor = 0;
+        if (nz >= rampDef.zMax - 0.05 && me.floor !== 1) me.floor = 1;
+      } else {
+        // Off-ramp: floor is determined by which slab we just stepped onto.
+        // Here we stay with current floor unless we just came off the ramp.
+      }
+      return;
+    }
+  }
+}
+
+function canStandAt(me, x, z) {
+  const m = FLOOR_SIZE / 2 - PLAYER_RADIUS;
+  if (x < -m || x > m || z < -m || z > m) return false;
+  const targetFloor = isOnRamp(x, z) ? me.floor : me.floor;
+  for (const c of colliders) {
+    if (c.floor !== targetFloor) continue;
+    if (
+      x > c.minX - PLAYER_RADIUS && x < c.maxX + PLAYER_RADIUS &&
+      z > c.minZ - PLAYER_RADIUS && z < c.maxZ + PLAYER_RADIUS
+    ) return false;
+  }
+  return true;
+}
+
+// ----- Spray -----
 const tmpVec = new THREE.Vector3();
-const raycaster = new THREE.Raycaster();
 const aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const aimPoint = new THREE.Vector3();
+const raycaster = new THREE.Raycaster();
 
-// Reusable objects for the occlusion-fade ray cast.
-const occRaycaster = new THREE.Raycaster();
-const occPlayerPos = new THREE.Vector3();
-const occCamDir = new THREE.Vector3();
-const FADE_OPACITY = 0.1;     // walls fade to 10% when blocking view, per spec
-const FADE_RATE = 12;         // higher = snappier transitions
+function getMouseAim(targetY) {
+  raycaster.setFromCamera(mouseAim, camera);
+  aimPlane.constant = -targetY;     // floor at targetY
+  if (raycaster.ray.intersectPlane(aimPlane, aimPoint)) return aimPoint;
+  return null;
+}
 
-// Spray ray from player chest toward mouse aim. Returns the first hit on
-// either the floor or any fadable mesh (walls, furniture).
 const sprayRay = new THREE.Raycaster();
 const sprayOrigin = new THREE.Vector3();
 const sprayDir = new THREE.Vector3();
 const sprayAimVec = new THREE.Vector3();
+
 function emitSpray(me) {
-  const aim = getMouseAim();
+  const meY = currentY(me);
+  const aim = getMouseAim(meY);
   if (!aim) {
-    // No mouse aim → fall back to spraying in front of the player on the floor.
+    // Fallback: spray in front of player on current floor
     const fx = me.x + Math.sin(me.ry) * PAINT_REACH;
     const fz = me.z + Math.cos(me.ry) * PAINT_REACH;
-    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId);
-    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS });
+    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId, me.floor);
+    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS, floor: me.floor });
     return;
   }
-  sprayOrigin.set(me.x, 1.2, me.z);
+  sprayOrigin.set(me.x, meY + 1.2, me.z);
   sprayAimVec.copy(aim);
   sprayDir.subVectors(sprayAimVec, sprayOrigin).normalize();
   sprayRay.set(sprayOrigin, sprayDir);
-  sprayRay.far = MAX_PAINT_REACH + 4;
-  const candidates = [painter.mesh, ...fadables];
+  sprayRay.far = MAX_PAINT_REACH + 6;
+  const candidates = [...painter.getMeshes(), ...fadables];
   const hits = sprayRay.intersectObjects(candidates, false);
   if (hits.length === 0) return;
   const hit = hits[0];
-  if (hit.object === painter.mesh) {
-    // Floor hit → canvas paint (counts toward area + restricts movement).
+  const floorIdx = hit.object.userData.floor;
+  if (Number.isFinite(floorIdx)) {
     let fx = hit.point.x, fz = hit.point.z;
-    // Clamp reach in case the floor extends far beyond the room.
     const dx = fx - me.x, dz = fz - me.z;
     const d = Math.hypot(dx, dz);
     if (d > MAX_PAINT_REACH) {
       fx = me.x + dx * MAX_PAINT_REACH / d;
       fz = me.z + dz * MAX_PAINT_REACH / d;
     }
-    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId);
-    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS });
+    painter.paint(fx, fz, PAINT_RADIUS, myColor, myId, floorIdx);
+    net.send({ type: 'paint', x: fx, z: fz, r: PAINT_RADIUS, floor: floorIdx });
   } else {
-    // Wall / furniture hit → spawn a decal at the hit point.
     const point = hit.point;
     const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-    spawnWallSplat(point, normal, myColor, PAINT_RADIUS * 1.8);
+    spawnWallSplat(point, normal, myColor, PAINT_RADIUS * 1.7);
     net.send({
       type: 'decal',
       x: point.x, y: point.y, z: point.z,
       nx: normal.x, ny: normal.y, nz: normal.z,
-      r: PAINT_RADIUS * 1.8,
+      r: PAINT_RADIUS * 1.7,
     });
   }
 }
 
-function updateOcclusion(me, dt) {
-  // Reset target opacity on every frame; raycast hits will mark occluders.
-  for (const m of fadables) m.userData.fadeTarget = 1.0;
+// ----- Occlusion fade -----
+const occRaycaster = new THREE.Raycaster();
+const occPlayerPos = new THREE.Vector3();
+const occCamDir = new THREE.Vector3();
+const FADE_OPACITY = 0.1;
+const FADE_RATE = 12;
 
-  occPlayerPos.set(me.x, 1.0, me.z);
+function updateOcclusion(me, dt) {
+  for (const m of fadables) m.userData.fadeTarget = 1.0;
+  occPlayerPos.set(me.x, currentY(me) + 1.0, me.z);
   occCamDir.subVectors(occPlayerPos, camera.position);
   const dist = occCamDir.length();
   if (dist > 0.05) {
@@ -555,7 +651,6 @@ function updateOcclusion(me, dt) {
     const hits = occRaycaster.intersectObjects(fadables, false);
     for (const h of hits) h.object.userData.fadeTarget = FADE_OPACITY;
   }
-
   const t = Math.min(1, dt * FADE_RATE);
   for (const m of fadables) {
     const target = m.userData.fadeTarget;
@@ -567,58 +662,15 @@ function updateOcclusion(me, dt) {
   }
 }
 
-function getMouseAim() {
-  raycaster.setFromCamera(mouseAim, camera);
-  if (raycaster.ray.intersectPlane(aimPlane, aimPoint)) return aimPoint;
-  return null;
-}
-
-function tryMove(me, dx, dz) {
-  // Try the full move, then sliding along axes if blocked.
-  const attempts = [
-    [dx, dz],
-    [dx, 0],
-    [0, dz],
-  ];
-  for (const [ax, az] of attempts) {
-    const nx = me.x + ax;
-    const nz = me.z + az;
-    if (canStandAt(me, nx, nz)) {
-      me.x = nx; me.z = nz;
-      return;
-    }
-  }
-}
-
-function canStandAt(me, x, z) {
-  // Floor bounds
-  const m = FLOOR_SIZE / 2 - PLAYER_RADIUS;
-  if (x < -m || x > m || z < -m || z > m) return false;
-  // House colliders (AABB inflated by player radius)
-  for (const c of colliders) {
-    if (
-      x > c.minX - PLAYER_RADIUS && x < c.maxX + PLAYER_RADIUS &&
-      z > c.minZ - PLAYER_RADIUS && z < c.maxZ + PLAYER_RADIUS
-    ) return false;
-  }
-  // Enemy paint blocks during play
-  if (phase === 'playing') {
-    const owner = painter.ownerAt(x, z);
-    if (owner !== 0 && owner !== myId) return false;
-  }
-  return true;
-}
-
+// ----- Game loop -----
 let prevTime = performance.now();
 function animate(time) {
   const dt = Math.min(0.05, (time - prevTime) / 1000);
   prevTime = time;
 
-  // ----- update local player -----
   const me = players.get(myId);
   if (me) {
-    if (phase === 'playing' || phase === 'countdown') {
-      // Compute movement vector from keys, in world axes (top-down style)
+    if ((phase === 'playing' || phase === 'countdown') && !me.dead) {
       let mx = 0, mz = 0;
       if (keys['KeyW'] || keys['ArrowUp'])    mz -= 1;
       if (keys['KeyS'] || keys['ArrowDown'])  mz += 1;
@@ -628,67 +680,98 @@ function animate(time) {
       if (ml > 0) { mx /= ml; mz /= ml; }
       const dx = mx * PLAYER_SPEED * dt;
       const dz = mz * PLAYER_SPEED * dt;
+
+      const oldX = me.x, oldZ = me.z;
       if (phase === 'playing' && (dx !== 0 || dz !== 0)) {
         tryMove(me, dx, dz);
       }
 
-      // Face mouse-aim point (or movement direction if mouse not over canvas)
-      const aim = getMouseAim();
+      // Check enemy color (death) — only on actual floors, not on ramp
+      if (phase === 'playing' && !isOnRamp(me.x, me.z)) {
+        const owner = painter.ownerAt(me.x, me.z, me.floor);
+        if (owner !== 0 && owner !== myId) {
+          // server is authoritative; client also predicts to feel snappy
+          // Don't actually set me.dead here — server will send 'died' message.
+          // But we can stop sending move updates immediately once over enemy paint.
+        }
+      }
+
+      // Aim & facing
+      const aim = getMouseAim(currentY(me));
       if (aim) {
-        const yaw = Math.atan2(aim.x - me.x, aim.z - me.z);
-        me.ry = yaw;
+        me.ry = Math.atan2(aim.x - me.x, aim.z - me.z);
       } else if (ml > 0) {
         me.ry = Math.atan2(mx, mz);
       }
-      me.mesh.position.set(me.x, 0, me.z);
-      me.mesh.rotation.y = me.ry + Math.PI; // mesh faces +Z by default; flip to face aim
+      const meY = currentY(me);
+      me.mesh.position.set(me.x, meY, me.z);
+      me.mesh.rotation.y = me.ry + Math.PI;
 
       // Send move (throttled)
       if (time - lastSentMoveAt > 50) {
         lastSentMoveAt = time;
-        net.send({ type: 'move', x: me.x, z: me.z, ry: me.ry });
+        net.send({ type: 'move', x: me.x, z: me.z, ry: me.ry, floor: me.floor });
       }
 
-      // Spray paint if firing — raycast from chest height through the mouse
-      // cursor. First surface hit decides whether it's a floor stamp or a
-      // wall/furniture splat.
+      // Footprints: stamp every FOOTPRINT_STEP meters along the trail (only
+      // on actual floors, not the ramp, and only when player actually moved).
+      if (phase === 'playing' && !isOnRamp(me.x, me.z)) {
+        const fdx = me.x - lastFootprintX;
+        const fdz = me.z - lastFootprintZ;
+        const moved = Math.hypot(fdx, fdz);
+        if (moved > FOOTPRINT_STEP && time - lastSentFootprintAt > 70) {
+          lastSentFootprintAt = time;
+          lastFootprintX = me.x; lastFootprintZ = me.z;
+          painter.paint(me.x, me.z, FOOTPRINT_RADIUS, myColor, myId, me.floor);
+          net.send({
+            type: 'footprint',
+            x: me.x, z: me.z, r: FOOTPRINT_RADIUS, floor: me.floor,
+          });
+        }
+      }
+
       if (firing && phase === 'playing' && time - lastSentPaintAt > 55) {
         lastSentPaintAt = time;
         emitSpray(me);
       }
+    } else if (me.dead) {
+      // Keep avatar pinned at last position while dead
+      if (me.mesh) {
+        me.mesh.position.set(me.x, currentY(me), me.z);
+      }
     }
   }
 
-  // ----- update remote players (interpolated) -----
+  // Remote players (interpolated)
   for (const p of players.values()) {
     if (p.id === myId) continue;
     if (p.tx !== undefined) {
       p.x += (p.tx - p.x) * Math.min(1, dt * 12);
       p.z += (p.tz - p.z) * Math.min(1, dt * 12);
       p.ry = lerpAngle(p.ry || 0, p.try || 0, Math.min(1, dt * 12));
+      if (Number.isFinite(p.tFloor)) p.floor = p.tFloor;
       if (p.mesh) {
-        p.mesh.position.set(p.x, 0, p.z);
+        p.mesh.position.set(p.x, currentY(p), p.z);
         p.mesh.rotation.y = p.ry + Math.PI;
       }
     }
   }
 
-  // ----- camera follow -----
+  // Camera follow — adjusts to floor Y
   if (me) {
-    // Over-shoulder follow camera: ~3.5m up, ~6m behind, looking forward.
-    // Lower angle than a strict top-down so walls and furniture stay in frame.
+    const meY = currentY(me);
     const targetX = me.x;
-    const targetY = 3.5;
+    const targetY = meY + 3.5;
     const targetZ = me.z + 6.0;
     camera.position.lerp(tmpVec.set(targetX, targetY, targetZ), Math.min(1, dt * 5));
-    camera.lookAt(me.x, 1.0, me.z - 2.0);
-    updateOcclusion(me, dt);
+    camera.lookAt(me.x, meY + 1.0, me.z - 2.0);
+    if (!me.dead) updateOcclusion(me, dt);
   } else {
-    camera.position.set(0, 4, 10);
+    camera.position.set(0, 5, 14);
     camera.lookAt(0, 1, 0);
   }
 
-  // ----- timer & countdown UI -----
+  // Timer / countdown / death UI
   const remaining = Math.max(0, phaseEndsAt - Date.now());
   if (phase === 'playing') {
     timerEl.textContent = (remaining / 1000).toFixed(1);
@@ -697,8 +780,18 @@ function animate(time) {
     countdownEl.textContent = sec > 0 ? sec : 'GO!';
     countdownEl.classList.toggle('go', sec <= 0);
     timerEl.textContent = '--';
-  } else if (phase === 'lobby' || phase === 'ended') {
+  } else {
     timerEl.textContent = '--';
+  }
+
+  if (myRespawnAt > 0) {
+    const left = Math.max(0, (myRespawnAt - Date.now()) / 1000);
+    showDeath();
+    const dt2 = deathTimerEl();
+    if (dt2) dt2.textContent = left.toFixed(1);
+    if (left <= 0) hideDeath();
+  } else {
+    hideDeath();
   }
 
   renderer.render(scene, camera);
@@ -725,13 +818,11 @@ function fitRenderer() {
 window.addEventListener('resize', fitRenderer);
 fitRenderer();
 
-// Debug hook for inspection (harmless in prod)
 window.__game = {
   scene, camera, renderer, players, painter, house, fadables,
   wallSplatGroup, spawnWallSplat, updateOcclusion, emitSpray,
   THREE,
   getMe: () => players.get(myId),
 };
-
 
 requestAnimationFrame(animate);
