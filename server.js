@@ -231,8 +231,16 @@ setInterval(() => {
       remaining: Math.max(0, phaseEndsAt - now),
       scores: computeScores(),
     });
+  } else if (phase === 'countdown') {
+    // Push countdown ticks so the client doesn't depend on its rAF loop to
+    // count down — hidden / throttled tabs would otherwise show only the
+    // first number ("3") and then jump straight to playing.
+    broadcast({
+      type: 'countdownTick',
+      remaining: Math.max(0, phaseEndsAt - now),
+    });
   }
-}, 500);
+}, 250);
 
 // ----- HTTP + WebSocket -----
 const app = express();
@@ -253,7 +261,7 @@ wss.on('connection', (ws) => {
   const sp = spawnPosition(players.size);
   const player = {
     id, color, ws,
-    name: `玩家${id}`,
+    name: `Player ${id}`,
     x: sp.x, z: sp.z, floor: sp.floor, ry: sp.ry,
     dead: false, deadUntil: 0,
     lastMoveAt: 0, lastPaintAt: 0, lastFootprintAt: 0,
