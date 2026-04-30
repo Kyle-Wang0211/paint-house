@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>喷涂大房子 · 多人在线</title>
+<title>Paint House · Multiplayer</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
 {
@@ -31,20 +31,20 @@
   <!-- Lobby / Menu overlay -->
   <div id="overlay" class="overlay">
     <div class="panel">
-      <h1>喷涂大房子</h1>
-      <p class="sub">多人在线 · 喷涂地板 · 占地为王</p>
+      <h1>Paint House</h1>
+      <p class="sub">Multiplayer · Paint the floor · Claim your territory</p>
       <div class="row">
-        <label>名字</label>
-        <input id="name" maxlength="16" placeholder="给自己起个名字">
+        <label>Name</label>
+        <input id="name" maxlength="16" placeholder="Pick a name">
       </div>
       <div id="players" class="players"></div>
-      <div id="status" class="status">连接中…</div>
-      <button id="startBtn" class="primary" disabled>开始游戏</button>
+      <div id="status" class="status">Connecting…</div>
+      <button id="startBtn" class="primary" disabled>Start Game</button>
       <div class="hint">
-        <b>W / S</b> 前进 / 后退 ·
-        <b>A / D</b> 左右转视角 ·
-        <b>鼠标移动</b> 准星瞄准 ·
-        <b>左键 / 空格</b> 喷涂
+        <b>W / S</b> Forward / Back ·
+        <b>A / D</b> Rotate camera ·
+        <b>Mouse</b> Aim ·
+        <b>Left click / Space</b> Paint
       </div>
     </div>
   </div>
@@ -52,9 +52,9 @@
   <!-- Result overlay -->
   <div id="result" class="overlay hidden">
     <div class="panel">
-      <h1 id="resultTitle">结果</h1>
+      <h1 id="resultTitle">Result</h1>
       <div id="ranking" class="ranking"></div>
-      <button id="restartBtn" class="primary">再来一局</button>
+      <button id="restartBtn" class="primary">Play Again</button>
     </div>
   </div>
 

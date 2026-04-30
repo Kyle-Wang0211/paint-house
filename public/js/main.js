@@ -207,7 +207,7 @@ function makeNameSprite(name, color) {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 64;
   const ctx = c.getContext('2d');
-  ctx.font = 'bold 28px -apple-system, "PingFang SC", sans-serif';
+  ctx.font = 'bold 28px -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const text = name;
@@ -290,12 +290,12 @@ function updatePlayersUI() {
   for (const p of players.values()) {
     const chip = document.createElement('div');
     chip.className = 'player-chip';
-    chip.innerHTML = `<span class="swatch" style="background:${p.color}"></span><span>${p.name}${p.id === myId ? ' (你)' : ''}</span>`;
+    chip.innerHTML = `<span class="swatch" style="background:${p.color}"></span><span>${p.name}${p.id === myId ? ' (You)' : ''}</span>`;
     playersEl.appendChild(chip);
   }
   startBtn.disabled = players.size < 1;
-  if (players.size === 0) statusEl.textContent = '等待玩家加入…';
-  else statusEl.textContent = `已连接 ${players.size} 名玩家。任意一人按"开始游戏"即可开始本局。`;
+  if (players.size === 0) statusEl.textContent = 'Waiting for players…';
+  else statusEl.textContent = `${players.size} player${players.size === 1 ? '' : 's'} connected. Anyone can press "Start Game" to begin.`;
 }
 
 // ----- Network -----
@@ -303,8 +303,8 @@ const net = new Network();
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 net.connect(wsUrl);
 
-net.on('open', () => statusEl.textContent = '已连接，等待加入…');
-net.on('close', () => statusEl.textContent = '与服务器断开，请刷新页面');
+net.on('open', () => statusEl.textContent = 'Connected, joining…');
+net.on('close', () => statusEl.textContent = 'Disconnected from server. Please refresh the page.');
 net.on('welcome', (m) => {
   myId = m.id; myColor = m.color;
   respawnSeconds = m.respawnSeconds || 3;
@@ -398,7 +398,7 @@ net.on('scores', (m) => {
   // keeps the timer ticking at 500ms granularity in those cases.
   timerEl.textContent = ((m.remaining || 0) / 1000).toFixed(1);
 });
-net.on('rejected', (m) => alert('无法加入：' + (m.reason || '未知原因')));
+net.on('rejected', (m) => alert('Unable to join: ' + (m.reason || 'Unknown reason')));
 
 function applyPhase(p, endsAt, ranking, fullMsg) {
   phase = p;
@@ -470,10 +470,10 @@ function showResults(ranking) {
   result.classList.remove('hidden');
   rankingEl.innerHTML = '';
   if (!ranking || ranking.length === 0) {
-    resultTitleEl.textContent = '本局结束'; return;
+    resultTitleEl.textContent = 'Round Over'; return;
   }
   const winner = ranking[0];
-  resultTitleEl.textContent = winner.id === myId ? '🏆 你赢了！' : `🏆 ${winner.name} 获胜`;
+  resultTitleEl.textContent = winner.id === myId ? '🏆 You Win!' : `🏆 ${winner.name} Wins`;
   ranking.forEach((r, idx) => {
     const row = document.createElement('div');
     row.className = 'rank-row' + (idx === 0 ? ' first' : '');
@@ -481,7 +481,7 @@ function showResults(ranking) {
       <div class="bar" style="width:${r.percent.toFixed(1)}%; background:${r.color}"></div>
       <div class="pos">#${idx + 1}</div>
       <div class="swatch" style="background:${r.color}"></div>
-      <div class="name">${r.name}${r.id === myId ? ' (你)' : ''}</div>
+      <div class="name">${r.name}${r.id === myId ? ' (You)' : ''}</div>
       <div class="pct">${r.percent.toFixed(1)}%</div>
     `;
     rankingEl.appendChild(row);
@@ -505,7 +505,7 @@ if (!deathEl) {
   deathEl = document.createElement('div');
   deathEl.id = 'death';
   deathEl.className = 'death-overlay hidden';
-  deathEl.innerHTML = `<div class="death-panel"><div class="death-title">💀 你被涂掉了</div><div class="death-sub">复活倒计时 <span id="deathTimer">3.0</span> 秒</div></div>`;
+  deathEl.innerHTML = `<div class="death-panel"><div class="death-title">💀 You got painted!</div><div class="death-sub">Respawning in <span id="deathTimer">3.0</span>s</div></div>`;
   document.body.appendChild(deathEl);
 }
 const deathTimerEl = () => document.getElementById('deathTimer');
