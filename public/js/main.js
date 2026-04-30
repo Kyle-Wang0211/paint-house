@@ -697,6 +697,28 @@ const sprayOrigin = new THREE.Vector3();
 const sprayDir = new THREE.Vector3();
 const sprayAimVec = new THREE.Vector3();
 
+// Paint a continuous stroke from (fromX, fromZ) on `fromFloor` to (toX, toZ)
+// on `toFloor`. Mirrors the server's paint-message handler — when from* is
+// finite, same floor, and the distance is plausible, we drop intermediate
+// stamps along the segment so a fast-moving player leaves a continuous
+// trail instead of disconnected dots. Falls back to a single stamp at the
+// endpoint when there's no usable origin.
+function paintStroke(fromX, fromZ, fromFloor, toX, toZ, toFloor, colorHex, ownerId, radius) {
+  if (Number.isFinite(fromX) && Number.isFinite(fromZ) && fromFloor === toFloor) {
+    const dx = toX - fromX, dz = toZ - fromZ;
+    const d = Math.hypot(dx, dz);
+    if (d > 0.05 && d < 6) {
+      const stepLen = radius * 0.5;
+      const steps = Math.max(1, Math.ceil(d / stepLen));
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        painter.paint(fromX + dx * t, fromZ + dz * t, radius, colorHex, ownerId, toFloor);
+      }
+    }
+  }
+  painter.paint(toX, toZ, radius, colorHex, ownerId, toFloor);
+}
+
 function emitSpray(me) {
   const meY = currentY(me);
   const aim = getMouseAim(meY);
