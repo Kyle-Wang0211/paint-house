@@ -69,6 +69,13 @@ function stampPaint(playerId, x, z, r, floor) {
   }
 }
 
+// Erase paint inside a circle. Used to neutralise the cells under a
+// respawning player so they don't get killed the instant their invuln
+// expires when the whole spawn area has been blanketed by an enemy.
+function erasePaint(x, z, r, floor) {
+  stampPaint(0, x, z, r, floor);
+}
+
 function sampleColorAt(x, z, floor) {
   if (floor < 0 || floor >= FLOORS) return 0;
   const { cx, cz } = worldToCell(x, z);
@@ -156,6 +163,26 @@ function spawnPosition(seed) {
   return { x: slot.x, z: slot.z, floor: 0, ry: Math.PI };
 }
 
+// Pick a spawn slot that isn't covered by enemy paint. If every slot is
+// enemy-coloured (everything's been blanketed), fall back to a random one
+// — the caller still grants invulnerability so the player gets a window to
+// move out before the next paint check kills them.
+function chooseSafeSpawnSlot(player) {
+  const indices = SPAWN_SLOTS.map((_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  for (const i of indices) {
+    const slot = SPAWN_SLOTS[i];
+    const owner = sampleColorAt(slot.x, slot.z, 0);
+    if (owner === 0 || owner === player.id) return slot;
+  }
+  return SPAWN_SLOTS[indices[0]];
+}
+
+const RESPAWN_INVULN_MS = 1500;
+
 function killPlayer(player, killerId) {
   if (player.dead) return;
   player.dead = true;
@@ -165,15 +192,32 @@ function killPlayer(player, killerId) {
   broadcast({ type: 'playerDied', id: player.id, killerId: killerId || 0 }, player.id);
 }
 
+const RESPAWN_CLEAR_RADIUS = 0.9;   // metres; > player radius (0.36) so a
+                                    // standing player isn't on enemy paint.
 function respawnPlayer(player) {
-  // Pick any random spawn slot in the lobby — keeps respawns away from the
-  // staircase and outer walls regardless of who/how many died simultaneously.
-  const sp = SPAWN_SLOTS[Math.floor(Math.random() * SPAWN_SLOTS.length)];
-  player.x = sp.x; player.z = sp.z; player.floor = 0; player.ry = Math.PI;
+  // Prefer a slot not covered by enemy paint, and grant a brief invuln
+  // window in case every slot is already painted-over.
+  const slot = chooseSafeSpawnSlot(player);
+  player.x = slot.x; player.z = slot.z; player.floor = 0; player.ry = Math.PI;
   player.dead = false;
   player.deadUntil = 0;
-  send(player, { type: 'respawn', x: player.x, z: player.z, floor: 0, ry: player.ry });
-  broadcast({ type: 'playerRespawn', id: player.id, x: player.x, z: player.z, floor: 0, ry: player.ry }, player.id);
+  player.invulnerableUntil = Date.now() + RESPAWN_INVULN_MS;
+  // Always clear a small disc under the respawning player so when invuln
+  // ends they aren't standing on enemy paint. Keeps respawn fair even when
+  // an opponent has blanketed the whole spawn lobby.
+  erasePaint(slot.x, slot.z, RESPAWN_CLEAR_RADIUS, 0);
+  send(player, {
+    type: 'respawn',
+    x: player.x, z: player.z, floor: 0, ry: player.ry,
+    invulnerableMs: RESPAWN_INVULN_MS,
+    clearRadius: RESPAWN_CLEAR_RADIUS,
+  });
+  broadcast({
+    type: 'playerRespawn',
+    id: player.id, x: player.x, z: player.z, floor: 0, ry: player.ry,
+    invulnerableMs: RESPAWN_INVULN_MS,
+    clearRadius: RESPAWN_CLEAR_RADIUS,
+  }, player.id);
 }
 
 // ----- Phase transitions -----
@@ -185,7 +229,7 @@ function startCountdown() {
   for (const p of players.values()) {
     const sp = spawnPosition(i++);
     p.x = sp.x; p.z = sp.z; p.floor = 0; p.ry = sp.ry;
-    p.dead = false; p.deadUntil = 0;
+    p.dead = false; p.deadUntil = 0; p.invulnerableUntil = 0;
     console.log(`[spawn] countdown id=${p.id} slotIdx=${i-1} → (${sp.x},${sp.z}) ry=${sp.ry.toFixed(2)}`);
   }
   phase = 'countdown';
@@ -263,7 +307,7 @@ wss.on('connection', (ws) => {
     id, color, ws,
     name: `Player ${id}`,
     x: sp.x, z: sp.z, floor: sp.floor, ry: sp.ry,
-    dead: false, deadUntil: 0,
+    dead: false, deadUntil: 0, invulnerableUntil: 0,
     lastMoveAt: 0, lastPaintAt: 0, lastFootprintAt: 0,
   };
   players.set(id, player);
@@ -304,8 +348,10 @@ wss.on('connection', (ws) => {
       const ry = +msg.ry || 0;
       const reqFloor = Number.isFinite(+msg.floor) ? Math.max(0, Math.min(FLOORS - 1, +msg.floor)) : player.floor;
 
-      // Death check (only on actual floor surfaces, not ramp)
-      if (phase === 'playing' && !isOnRamp(nx, nz)) {
+      // Death check (only on actual floor surfaces, not ramp). Skip while
+      // the player has post-respawn invulnerability so they don't get
+      // re-killed by the next move tick if they respawned onto enemy paint.
+      if (phase === 'playing' && !isOnRamp(nx, nz) && Date.now() >= (player.invulnerableUntil || 0)) {
         const colorId = sampleColorAt(nx, nz, reqFloor);
         if (colorId !== 0 && colorId !== player.id) {
           killPlayer(player, colorId);

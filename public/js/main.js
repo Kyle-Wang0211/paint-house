@@ -362,7 +362,7 @@ net.on('died', (m) => {
 net.on('respawn', (m) => {
   const me = players.get(myId);
   if (!me) return;
-  console.log('[spawn] respawn received', { x: m.x, z: m.z, ry: m.ry, floor: m.floor });
+  console.log('[spawn] respawn received', { x: m.x, z: m.z, ry: m.ry, floor: m.floor, invulnMs: m.invulnerableMs });
   me.x = m.x; me.z = m.z; me.tx = m.x; me.tz = m.z;
   me.floor = m.floor || 0; me.tFloor = me.floor;
   me.ry = m.ry || 0; me.try = me.ry;
@@ -371,6 +371,9 @@ net.on('respawn', (m) => {
   me.dead = false;
   setAvatarVisibility(me);
   myRespawnAt = 0;
+  // Mirror the server's spawn-clear so the local painter doesn't show
+  // enemy paint under the player's feet anymore.
+  if (m.clearRadius) painter.erase(m.x, m.z, m.clearRadius, me.floor);
 });
 net.on('playerDied', (m) => {
   const p = players.get(m.id);
@@ -384,6 +387,7 @@ net.on('playerRespawn', (m) => {
   p.floor = m.floor; p.tFloor = m.floor; p.ry = m.ry; p.try = m.ry;
   p.dead = false;
   setAvatarVisibility(p);
+  if (m.clearRadius) painter.erase(m.x, m.z, m.clearRadius, m.floor);
 });
 net.on('phase', (m) => {
   console.log('[phase]', m.phase, 'endsIn=' + (m.endsAt - Date.now()) + 'ms');
@@ -1045,6 +1049,7 @@ window.__game = {
   scene, camera, renderer, players, painter, house, fadables,
   wallSplatGroup, spawnWallSplat, updateOcclusion, emitSpray,
   THREE,
+  net,
   getMe: () => players.get(myId),
   getPhase: () => ({ phase, phaseEndsAt, remaining: phaseEndsAt - Date.now() }),
   getKeys: () => ({ ...keys }),

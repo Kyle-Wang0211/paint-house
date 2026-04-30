@@ -111,6 +111,41 @@ export class Painter {
     this.textures[floorIdx].needsUpdate = true;
   }
 
+  // Erase paint inside a circle (visual + ownership grid). Used to mirror
+  // server-side respawn-clear so a respawning player isn't standing on
+  // enemy paint that the rest of the lobby is blanketed with.
+  erase(x, z, radiusMeters, floorIdx) {
+    if (floorIdx < 0 || floorIdx >= this.floors) return;
+    const ctx = this.ctxs[floorIdx];
+    const { px, py } = this.worldToPx(x, z);
+    const rPx = (radiusMeters / this.floorSize) * this.resolution;
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(px, py, rPx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    const grid = this.grids[floorIdx];
+    const cellsPerMeter = this.gridResolution / this.floorSize;
+    const rc = radiusMeters * cellsPerMeter;
+    const { cx, cz } = this.worldToCell(x, z);
+    const r2 = rc * rc;
+    const minX = Math.max(0, Math.floor(cx - rc));
+    const maxX = Math.min(this.gridResolution - 1, Math.ceil(cx + rc));
+    const minZ = Math.max(0, Math.floor(cz - rc));
+    const maxZ = Math.min(this.gridResolution - 1, Math.ceil(cz + rc));
+    for (let zi = minZ; zi <= maxZ; zi++) {
+      for (let xi = minX; xi <= maxX; xi++) {
+        const dx = xi - cx;
+        const dz = zi - cz;
+        if (dx * dx + dz * dz <= r2) {
+          grid[zi * this.gridResolution + xi] = 0;
+        }
+      }
+    }
+    this.textures[floorIdx].needsUpdate = true;
+  }
+
   ownerAt(x, z, floorIdx) {
     if (floorIdx < 0 || floorIdx >= this.floors) return 0;
     const grid = this.grids[floorIdx];
