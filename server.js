@@ -22,9 +22,14 @@ const RAMP_Z_BOTTOM = -2;       // ground entrance
 const RAMP_Z_TOP = 8;           // upstairs landing
 const RAMP_LEN = RAMP_Z_TOP - RAMP_Z_BOTTOM;
 
+// 15 distinct colours so a single round can hold 15 players. Hand-spaced
+// around the hue wheel and kept saturated/bright so paint stays readable
+// on the dark wood floor.
 const PLAYER_COLORS = [
-  '#ff3b6b', '#36c2ff', '#ffd23a', '#7bff5c',
-  '#a85cff', '#ff8a3a', '#3affd4', '#ff5cf0',
+  '#ff3a3a', '#ff8a3a', '#ffd23a', '#a8ff3a',
+  '#3aff5c', '#3affa8', '#3affd4', '#36c2ff',
+  '#3a8aff', '#5c5cff', '#a85cff', '#ff5cf0',
+  '#ff3b6b', '#ff5ca8', '#c0ff3a',
 ];
 
 // ----- Game state -----
@@ -142,20 +147,20 @@ function pickColor() {
   return PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)];
 }
 
-// Spawn slots in the south room on floor 0 — pushed close to the south wall
-// so players are visibly far from the staircase. Avoid the staircase x-range
-// (x ∈ [-2.5, 2.5]) entirely, and stay clear of nearby furniture (TV at
-// x ∈ [2, 6] z ∈ [19, 19.6]; kitchen counter at x ∈ [-11.1, -10.1]).
-// Players face north (toward the rest of the room) by default.
+// 15 spawn slots in the south room on floor 0, enough for the full
+// PLAYER_COLORS roster. Avoid the staircase x-range (x ∈ [-2.5, 2.5])
+// entirely, and stay clear of nearby furniture (TV at x ∈ [2, 6]
+// z ∈ [19, 19.6]; sofa at x ∈ [5.3, 10.7] z ∈ [11.3, 12.7]; kitchen
+// counter at x ∈ [-11.1, -10.1]). Players face north by default.
 const SPAWN_SLOTS = [
-  { x: -7.5, z: 17.5 },
-  { x:  7.5, z: 17.5 },
-  { x: -4.0, z: 18.2 },
-  { x:  4.0, z: 18.2 },
-  { x: -7.5, z: 16.0 },
-  { x:  7.5, z: 16.0 },
-  { x: -4.0, z: 16.5 },
-  { x:  4.0, z: 16.5 },
+  // Row z=18.2 — closest to south wall
+  { x: -7.5, z: 18.2 }, { x: -4.0, z: 18.2 }, { x:  4.0, z: 18.2 }, { x:  7.5, z: 18.2 },
+  // Row z=17.5
+  { x: -7.5, z: 17.5 }, { x: -4.0, z: 17.5 }, { x:  4.0, z: 17.5 }, { x:  7.5, z: 17.5 },
+  // Row z=16
+  { x: -7.5, z: 16.0 }, { x: -4.0, z: 16.0 }, { x:  4.0, z: 16.0 }, { x:  7.5, z: 16.0 },
+  // Row z=14.5 — closest to ramp top, last to be assigned
+  { x: -7.5, z: 14.5 }, { x: -4.0, z: 14.5 }, { x:  4.0, z: 14.5 },
 ];
 
 function spawnPosition(seed) {
