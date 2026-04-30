@@ -138,7 +138,7 @@ function send(player, msg) {
 }
 
 function publicPlayer(p) {
-  return { id: p.id, name: p.name, color: p.color, x: p.x, z: p.z, ry: p.ry, floor: p.floor, dead: !!p.dead };
+  return { id: p.id, name: p.name, color: p.color, x: p.x, z: p.z, ry: p.ry, floor: p.floor, dead: !!p.dead, ready: !!p.ready };
 }
 
 function pickColor() {
@@ -235,6 +235,7 @@ function startCountdown() {
     const sp = spawnPosition(i++);
     p.x = sp.x; p.z = sp.z; p.floor = 0; p.ry = sp.ry;
     p.dead = false; p.deadUntil = 0; p.invulnerableUntil = 0;
+    p.ready = false;       // ready state is round-scoped; reset for the next lobby
     console.log(`[spawn] countdown id=${p.id} slotIdx=${i-1} → (${sp.x},${sp.z}) ry=${sp.ry.toFixed(2)}`);
   }
   phase = 'countdown';
@@ -244,6 +245,15 @@ function startCountdown() {
     duration: COUNTDOWN_SECONDS,
     players: [...players.values()].map(publicPlayer),
   });
+}
+
+// Start the round automatically once every connected player has clicked
+// Ready in the lobby. Single-player practice still works (1/1 ready → go).
+function checkAllReady() {
+  if (phase !== 'lobby' && phase !== 'ended') return;
+  if (players.size < 1) return;
+  for (const p of players.values()) if (!p.ready) return;
+  startCountdown();
 }
 
 function startRound() {
@@ -262,7 +272,13 @@ function endRound() {
 function backToLobby() {
   phase = 'lobby';
   clearGrids();
-  broadcast({ type: 'phase', phase });
+  // Reset everyone's ready state — each round requires a fresh round of
+  // confirmations.
+  for (const p of players.values()) p.ready = false;
+  broadcast({
+    type: 'phase', phase,
+    players: [...players.values()].map(publicPlayer),
+  });
 }
 
 setInterval(() => {
@@ -313,6 +329,7 @@ wss.on('connection', (ws) => {
     name: `Player ${id}`,
     x: sp.x, z: sp.z, floor: sp.floor, ry: sp.ry,
     dead: false, deadUntil: 0, invulnerableUntil: 0,
+    ready: false,
     lastMoveAt: 0, lastPaintAt: 0, lastFootprintAt: 0,
   };
   players.set(id, player);
@@ -459,8 +476,20 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (msg.type === 'startRound') {
-      if (phase === 'lobby' || phase === 'ended') startCountdown();
+    if (msg.type === 'ready') {
+      if (phase !== 'lobby' && phase !== 'ended') return;
+      if (player.ready) return;
+      player.ready = true;
+      broadcast({ type: 'playerReady', id: player.id, ready: true });
+      checkAllReady();
+      return;
+    }
+
+    if (msg.type === 'unready') {
+      if (phase !== 'lobby' && phase !== 'ended') return;
+      if (!player.ready) return;
+      player.ready = false;
+      broadcast({ type: 'playerReady', id: player.id, ready: false });
       return;
     }
   });
@@ -471,6 +500,10 @@ wss.on('connection', (ws) => {
     if (players.size === 0) {
       phase = 'lobby';
       clearGrids();
+    } else {
+      // The player who just left may have been the last hold-out keeping
+      // the lobby from launching. Re-check.
+      checkAllReady();
     }
   });
 });

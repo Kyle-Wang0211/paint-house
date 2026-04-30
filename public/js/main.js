@@ -255,6 +255,7 @@ function addOrUpdatePlayer(p) {
       tx: p.x, tz: p.z, try: p.ry || 0,
       tFloor: p.floor || 0, floor: p.floor || 0,
       dead: !!p.dead,
+      ready: !!p.ready,
       lastFootprintAt: 0, lastFootprintX: p.x, lastFootprintZ: p.z,
     };
     players.set(p.id, existing);
@@ -262,6 +263,7 @@ function addOrUpdatePlayer(p) {
     existing.tx = p.x; existing.tz = p.z; existing.try = p.ry || 0;
     if (Number.isFinite(p.floor)) existing.tFloor = p.floor;
     if (p.dead !== undefined) existing.dead = !!p.dead;
+    if (p.ready !== undefined) existing.ready = !!p.ready;
     if (p.name && p.name !== existing.name) {
       existing.name = p.name;
       refreshNameSprite(existing);
@@ -289,13 +291,32 @@ function updatePlayersUI() {
   playersEl.innerHTML = '';
   for (const p of players.values()) {
     const chip = document.createElement('div');
-    chip.className = 'player-chip';
-    chip.innerHTML = `<span class="swatch" style="background:${p.color}"></span><span>${p.name}${p.id === myId ? ' (You)' : ''}</span>`;
+    chip.className = 'player-chip' + (p.ready ? ' ready' : '');
+    const tick = p.ready ? '<span class="ready-mark">✓</span>' : '<span class="ready-mark idle">○</span>';
+    chip.innerHTML = `<span class="swatch" style="background:${p.color}"></span><span>${p.name}${p.id === myId ? ' (You)' : ''}</span>${tick}`;
     playersEl.appendChild(chip);
   }
-  startBtn.disabled = players.size < 1;
-  if (players.size === 0) statusEl.textContent = 'Waiting for players…';
-  else statusEl.textContent = `${players.size} player${players.size === 1 ? '' : 's'} connected. Anyone can press "Start Game" to begin.`;
+  const me = players.get(myId);
+  const total = players.size;
+  const readyCount = [...players.values()].filter(p => p.ready).length;
+  startBtn.disabled = total < 1;
+  // The Ready button toggles its own state; the Restart button on the result
+  // overlay does the same. Sync labels to whether *I* am ready.
+  if (me?.ready) {
+    startBtn.textContent = 'Cancel Ready';
+    if (restartBtn) restartBtn.textContent = 'Cancel Ready';
+  } else {
+    startBtn.textContent = 'Ready';
+    if (restartBtn) restartBtn.textContent = 'Ready';
+  }
+  if (total === 0) {
+    statusEl.textContent = 'Waiting for players…';
+  } else if (readyCount < total) {
+    const waiting = total - readyCount;
+    statusEl.textContent = `${readyCount} / ${total} ready — waiting for ${waiting} more.`;
+  } else {
+    statusEl.textContent = 'All ready — starting…';
+  }
 }
 
 // ----- Network -----
@@ -323,6 +344,12 @@ net.on('playerLeave', (m) => removePlayer(m.id));
 net.on('playerName', (m) => {
   const p = players.get(m.id);
   if (p) { p.name = m.name; refreshNameSprite(p); updatePlayersUI(); }
+});
+net.on('playerReady', (m) => {
+  const p = players.get(m.id);
+  if (!p) return;
+  p.ready = !!m.ready;
+  updatePlayersUI();
 });
 net.on('playerMove', (m) => {
   const p = players.get(m.id);
@@ -391,6 +418,15 @@ net.on('playerRespawn', (m) => {
 });
 net.on('phase', (m) => {
   console.log('[phase]', m.phase, 'endsIn=' + (m.endsAt - Date.now()) + 'ms');
+  // Phase changes (countdown / back-to-lobby) reset ready state. Mirror it
+  // before applyPhase so the lobby UI updates the chips' tick marks.
+  if (m.players) {
+    for (const sp of m.players) {
+      const pp = players.get(sp.id);
+      if (pp && sp.ready !== undefined) pp.ready = !!sp.ready;
+    }
+    updatePlayersUI();
+  }
   applyPhase(m.phase, m.endsAt, m.ranking, m);
 });
 net.on('scores', (m) => {
@@ -564,17 +600,21 @@ window.addEventListener('mousemove', (e) => {
   mouseAim.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 });
 
+function toggleReady() {
+  const me = players.get(myId);
+  net.send({ type: me?.ready ? 'unready' : 'ready' });
+}
 startBtn.addEventListener('click', () => {
   const name = (nameInput.value || '').trim();
   if (name) net.send({ type: 'name', name });
-  net.send({ type: 'startRound' });
+  toggleReady();
   // After clicking the start button, focus would stay on the button —
   // pull keyboard focus back to the page so WASD reaches the window
   // keydown listener immediately, with no "click the canvas first" step.
   try { startBtn.blur(); window.focus(); } catch {}
 });
 restartBtn.addEventListener('click', () => {
-  net.send({ type: 'startRound' });
+  toggleReady();
   try { restartBtn.blur(); window.focus(); } catch {}
 });
 nameInput.addEventListener('change', () => {

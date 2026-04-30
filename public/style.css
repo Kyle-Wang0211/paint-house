@@ -89,7 +89,10 @@ input:focus { border-color: #36c2ff; }
   background: rgba(255,255,255,0.06);
   font-size: 13px;
 }
+.player-chip.ready { background: rgba(76, 220, 130, 0.18); }
 .player-chip .swatch { width: 12px; height: 12px; border-radius: 50%; }
+.player-chip .ready-mark { font-weight: 700; color: #58e98a; margin-left: 2px; }
+.player-chip .ready-mark.idle { color: #8a8aa0; font-weight: 400; }
 
 .status { color: #8a8aa0; font-size: 13px; margin-top: 14px; }
 
