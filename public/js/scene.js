@@ -69,8 +69,10 @@ export function buildHouse(floorSize, floor2Y) {
     m.position.set(x, y, z);
     m.castShadow = opts.castShadow ?? true;
     m.receiveShadow = opts.receiveShadow ?? true;
-    m.userData.fadable = true;
-    fadables.push(m);
+    if (opts.fadable !== false) {
+      m.userData.fadable = true;
+      fadables.push(m);
+    }
     group.add(m);
     if (opts.collide) {
       colliders.push({
@@ -151,29 +153,34 @@ export function buildHouse(floorSize, floor2Y) {
   const HZ1 = ramp.zMin, HZ2 = ramp.zMax;
   const slabY = floor2Y - slabT / 2;
 
+  // The slab is the upstairs floor surface. It must NOT be fadable — when
+  // a player is on floor 1, the camera-to-player occlusion ray can clip
+  // the slab edge from behind, fading the entire upstairs floor and
+  // letting you see straight through to the ground floor below.
+  const slabOpts = { collide: false, fadable: false };
   // Strip south of the hole
   if (HZ2 < half) {
     const z = (HZ2 + half) / 2;
     const d = half - HZ2;
-    addBox(floorSize, slabT, d, slabMat, 0, slabY, z, { collide: false });
+    addBox(floorSize, slabT, d, slabMat, 0, slabY, z, slabOpts);
   }
   // Strip north of the hole
   if (HZ1 > -half) {
     const z = (-half + HZ1) / 2;
     const d = HZ1 - (-half);
-    addBox(floorSize, slabT, d, slabMat, 0, slabY, z, { collide: false });
+    addBox(floorSize, slabT, d, slabMat, 0, slabY, z, slabOpts);
   }
   // Strip east of the hole (between hole z range)
   if (HX2 < half) {
     const x = (HX2 + half) / 2;
     const w = half - HX2;
-    addBox(w, slabT, HZ2 - HZ1, slabMat, x, slabY, (HZ1 + HZ2) / 2, { collide: false });
+    addBox(w, slabT, HZ2 - HZ1, slabMat, x, slabY, (HZ1 + HZ2) / 2, slabOpts);
   }
   // Strip west of the hole
   if (HX1 > -half) {
     const x = (-half + HX1) / 2;
     const w = HX1 - (-half);
-    addBox(w, slabT, HZ2 - HZ1, slabMat, x, slabY, (HZ1 + HZ2) / 2, { collide: false });
+    addBox(w, slabT, HZ2 - HZ1, slabMat, x, slabY, (HZ1 + HZ2) / 2, slabOpts);
   }
 
   // Soft railing around the upstairs hole so players don't fall in.
