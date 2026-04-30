@@ -231,8 +231,16 @@ setInterval(() => {
       remaining: Math.max(0, phaseEndsAt - now),
       scores: computeScores(),
     });
+  } else if (phase === 'countdown') {
+    // Push countdown ticks so the client doesn't depend on its rAF loop to
+    // count down — hidden / throttled tabs would otherwise show only the
+    // first number ("3") and then jump straight to playing.
+    broadcast({
+      type: 'countdownTick',
+      remaining: Math.max(0, phaseEndsAt - now),
+    });
   }
-}, 500);
+}, 250);
 
 // ----- HTTP + WebSocket -----
 const app = express();

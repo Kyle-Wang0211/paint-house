@@ -398,6 +398,16 @@ net.on('scores', (m) => {
   // keeps the timer ticking at 500ms granularity in those cases.
   timerEl.textContent = ((m.remaining || 0) / 1000).toFixed(1);
 });
+net.on('countdownTick', (m) => {
+  if (phase !== 'countdown') return;
+  phaseEndsAt = Date.now() + (m.remaining || 0);
+  // Same idea as the timer: don't depend on the rAF loop to advance the
+  // countdown number — drive it from the WS tick so throttled tabs still
+  // show 3 → 2 → 1 → GO!
+  const sec = Math.ceil((m.remaining || 0) / 1000);
+  countdownEl.textContent = sec > 0 ? sec : 'GO!';
+  countdownEl.classList.toggle('go', sec <= 0);
+});
 net.on('rejected', (m) => alert('Unable to join: ' + (m.reason || 'Unknown reason')));
 
 function applyPhase(p, endsAt, ranking, fullMsg) {
