@@ -38,22 +38,18 @@ scene.background = new THREE.Color(0x111118);
 scene.fog = new THREE.Fog(0x111118, 40, 110);
 
 const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 200);
-// The camera lives on a pivot that orbits the player's chest. Yaw rotates
-// horizontally; pitch tilts up/down. Mouse delta drives both while pointer
-// lock is active.
+// The camera lives on a pivot that orbits the player's chest. Yaw is driven
+// by A/D; pitch is fixed at a slight downward tilt.
 const cameraPivot = new THREE.Object3D();
 cameraPivot.rotation.order = 'YXZ';
 scene.add(cameraPivot);
 cameraPivot.add(camera);
 const CAMERA_DISTANCE = 6.8;
 const CAMERA_NEAR_LIMIT = 1.5; // never pull camera closer than this to player
-const CAMERA_DEFAULT_PITCH = -0.30;
+const CAMERA_PITCH = -0.30;
 camera.position.set(0, 0, CAMERA_DISTANCE);
 let cameraYaw = 0;
-let cameraPitch = CAMERA_DEFAULT_PITCH;  // tilted slightly down by default
 let cameraDistanceCurrent = CAMERA_DISTANCE;
-const PITCH_MIN = -0.55;       // ~32° down — enough to see floor, not lose horizon
-const PITCH_MAX = 0.30;        // ~17° up — can spray walls/ceiling slightly
 
 // Lights — moderate so ACES doesn't crush colors.
 const hemi = new THREE.HemisphereLight(0xb8c5d8, 0x3a3045, 0.45);
@@ -314,8 +310,11 @@ net.on('welcome', (m) => {
   respawnSeconds = m.respawnSeconds || 3;
   for (const p of m.players) addOrUpdatePlayer(p);
   if (!players.has(myId)) {
+    console.warn('[spawn] FALLBACK firing — myId not in welcome.players, placing at (0,0)');
     addOrUpdatePlayer({ id: myId, name: m.name, color: m.color, x: 0, z: 0, ry: 0, floor: 0 });
   }
+  const me = players.get(myId);
+  console.log('[spawn] joined as', myId, 'at', me && { x: me.x, z: me.z, ry: me.ry, floor: me.floor });
   applyPhase(m.phase, m.phaseEndsAt, m.ranking);
   if (nameInput.value === '') nameInput.value = m.name;
 });
@@ -363,6 +362,7 @@ net.on('died', (m) => {
 net.on('respawn', (m) => {
   const me = players.get(myId);
   if (!me) return;
+  console.log('[spawn] respawn received', { x: m.x, z: m.z, ry: m.ry, floor: m.floor });
   me.x = m.x; me.z = m.z; me.tx = m.x; me.tz = m.z;
   me.floor = m.floor || 0; me.tFloor = me.floor;
   me.ry = m.ry || 0; me.try = me.ry;
@@ -385,11 +385,18 @@ net.on('playerRespawn', (m) => {
   p.dead = false;
   setAvatarVisibility(p);
 });
-net.on('phase', (m) => applyPhase(m.phase, m.endsAt, m.ranking, m));
+net.on('phase', (m) => {
+  console.log('[phase]', m.phase, 'endsIn=' + (m.endsAt - Date.now()) + 'ms');
+  applyPhase(m.phase, m.endsAt, m.ranking, m);
+});
 net.on('scores', (m) => {
   if (phase !== 'playing') return;
   phaseEndsAt = Date.now() + (m.remaining || 0);
   renderScoreboard(m.scores);
+  // Update the timer here too — the animation loop is paused when the tab
+  // is hidden/throttled, but WebSocket messages still arrive, so this
+  // keeps the timer ticking at 500ms granularity in those cases.
+  timerEl.textContent = ((m.remaining || 0) / 1000).toFixed(1);
 });
 net.on('rejected', (m) => alert('无法加入：' + (m.reason || '未知原因')));
 
@@ -433,11 +440,23 @@ function applyPhase(p, endsAt, ranking, fullMsg) {
     }
     crosshair.classList.add('active');
     hideDeath();
+    // Prime the countdown number immediately. Without this, hidden/throttled
+    // tabs show empty/stale text until the next animation frame.
+    const remCd = Math.max(0, (endsAt || 0) - Date.now());
+    const sec = Math.ceil(remCd / 1000);
+    countdownEl.textContent = sec > 0 ? sec : 'GO!';
+    countdownEl.classList.toggle('go', sec <= 0);
+    timerEl.textContent = '--';
   } else if (p === 'playing') {
     overlay.classList.add('hidden');
     result.classList.add('hidden');
     countdownEl.classList.add('hidden');
     crosshair.classList.add('active');
+    // Prime the timer immediately so it doesn't show "--" until the next
+    // animation frame. Hidden/throttled tabs may not get a frame for a
+    // while, leaving the timer visibly stuck.
+    const remNow = Math.max(0, (endsAt || 0) - Date.now());
+    timerEl.textContent = (remNow / 1000).toFixed(1);
   } else if (p === 'ended') {
     countdownEl.classList.add('hidden');
     crosshair.classList.remove('active');
@@ -507,13 +526,6 @@ window.addEventListener('keydown', (e) => {
   if (document.activeElement === nameInput) return;
   keys[e.code] = true;
   if (e.code === 'Space') { firing = true; e.preventDefault(); }
-  // V resets view to align with player's facing + default pitch (panic button
-  // if the camera ends up somewhere disorienting).
-  if (e.code === 'KeyV') {
-    const me = players.get(myId);
-    cameraYaw = me ? (me.ry || 0) : 0;
-    cameraPitch = CAMERA_DEFAULT_PITCH;
-  }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
@@ -522,10 +534,9 @@ window.addEventListener('keyup', (e) => {
 canvas.addEventListener('mousedown', (e) => { if (e.button === 0) firing = true; });
 window.addEventListener('mouseup', (e) => { if (e.button === 0) firing = false; });
 
-// Camera-rotation rates (keyboard-driven so trackpad users don't have to
-// fight pointer lock). Q/E rotate yaw left/right; R/F tilt pitch up/down.
-const YAW_RATE = 2.4;          // rad/s when Q or E held
-const PITCH_RATE = 1.4;        // rad/s when R or F held
+// Camera yaw rate (keyboard-driven so trackpad users don't have to fight
+// pointer lock). A/D rotate yaw left/right.
+const YAW_RATE = 2.4;          // rad/s when A or D held
 
 window.addEventListener('mousemove', (e) => {
   const rect = canvas.getBoundingClientRect();
@@ -766,10 +777,48 @@ function updateOcclusion(me, dt) {
 }
 
 // ----- Game loop -----
+// We split the game tick from the renderer's rAF callback. The browser
+// pauses requestAnimationFrame when the tab is hidden / backgrounded /
+// running inside an iframe that's offscreen — but setInterval still fires
+// (throttled to ~1Hz when hidden, full speed when visible). Decoupling lets
+// the player keep moving and the timer keep updating even when rAF stalls.
+//
+// We also sub-step: each call to gameTick consumes accumulated real time
+// and advances the simulation in fixed 0.02s slices, so a long gap (e.g.
+// after a 1s background-throttled wake-up) catches up to real time without
+// teleporting through walls.
+const FIXED_DT = 0.020;
+const MAX_SUBSTEPS = 50;          // up to 1 real-second of catch-up per call
 let prevTime = performance.now();
-function animate(time) {
-  const dt = Math.min(0.05, (time - prevTime) / 1000);
-  prevTime = time;
+let tickAccumulator = 0;
+let gameTickRunning = false;
+function gameTick() {
+  if (gameTickRunning) return;    // re-entry guard if rAF + setInterval race
+  gameTickRunning = true;
+  try {
+    const time = performance.now();
+    let frameDt = (time - prevTime) / 1000;
+    prevTime = time;
+    if (frameDt <= 0) return;
+    if (frameDt > 1.0) frameDt = 1.0;     // sanity cap
+    tickAccumulator += frameDt;
+    let n = 0;
+    while (tickAccumulator >= FIXED_DT && n < MAX_SUBSTEPS) {
+      runFrame(FIXED_DT, time);
+      tickAccumulator -= FIXED_DT;
+      n++;
+    }
+    // If we hit the substep cap, drop any leftover so we don't spiral.
+    if (n >= MAX_SUBSTEPS) tickAccumulator = 0;
+    window.__diag_tickCalls = (window.__diag_tickCalls || 0) + 1;
+    window.__diag_substepCalls = (window.__diag_substepCalls || 0) + n;
+    window.__diag_lastFrameDt = frameDt;
+    window.__diag_lastSubsteps = n;
+  } finally {
+    gameTickRunning = false;
+  }
+}
+function runFrame(dt, time) {
 
   const me = players.get(myId);
   if (me) {
@@ -779,18 +828,6 @@ function animate(time) {
       // scheme without needing pointer lock or extra keys.
       if (keys['KeyA'] || keys['ArrowLeft'])  cameraYaw += YAW_RATE * dt;
       if (keys['KeyD'] || keys['ArrowRight']) cameraYaw -= YAW_RATE * dt;
-      const pitchInput = (keys['KeyR'] ? 1 : 0) - (keys['KeyF'] ? 1 : 0);
-      if (pitchInput !== 0) {
-        cameraPitch += pitchInput * PITCH_RATE * dt;
-      } else {
-        // Auto-relax pitch back toward default when nothing held — keeps the
-        // horizon line stable so the player doesn't drift into a top-down or
-        // sky-view orientation by accident.
-        const decay = (CAMERA_DEFAULT_PITCH - cameraPitch) * Math.min(1, dt * 1.6);
-        cameraPitch += decay;
-      }
-      if (cameraPitch < PITCH_MIN) cameraPitch = PITCH_MIN;
-      if (cameraPitch > PITCH_MAX) cameraPitch = PITCH_MAX;
 
       // W / S = forward / backward in the camera's looking direction.
       // (A and D are rebound above to camera rotation, so there's no strafe.)
@@ -834,7 +871,11 @@ function animate(time) {
       }
       const meY = currentY(me);
       me.mesh.position.set(me.x, meY, me.z);
-      me.mesh.rotation.y = me.ry + Math.PI;
+      // Avatar is built with nose/face on local +Z, so rotating by `ry`
+      // (the aim angle in atan2(x, z) form) aligns the visual front with
+      // the aim direction. The previous "+ π" offset flipped it 180°,
+      // making the avatar always face the camera.
+      me.mesh.rotation.y = me.ry;
 
       // Send move (throttled). Include y so other clients can render us at
       // the correct height while transitioning between floors via the ramp.
@@ -899,25 +940,25 @@ function animate(time) {
       if (Number.isFinite(p.tFloor)) p.floor = p.tFloor;
       if (p.mesh) {
         p.mesh.position.set(p.x, currentY(p), p.z);
-        p.mesh.rotation.y = p.ry + Math.PI;
+        p.mesh.rotation.y = p.ry;
       }
     }
   }
 
-  // Camera follow — pivot orbits player's chest, Q/E/R/F drive its rotation.
+  // Camera follow — pivot orbits player's chest, A/D drive its yaw.
   if (me) {
     const meY = currentY(me);
     cameraPivot.position.lerp(
       tmpVec.set(me.x, meY + 1.4, me.z),
       Math.min(1, dt * 12),
     );
-    cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
+    cameraPivot.rotation.set(CAMERA_PITCH, cameraYaw, 0, 'YXZ');
     cameraPivot.updateMatrixWorld(true);
     applyCameraCollision(dt);
     if (!me.dead) updateOcclusion(me, dt);
   } else {
     cameraPivot.position.set(0, 1.4, 0);
-    cameraPivot.rotation.set(cameraPitch, cameraYaw, 0, 'YXZ');
+    cameraPivot.rotation.set(CAMERA_PITCH, cameraYaw, 0, 'YXZ');
     cameraPivot.updateMatrixWorld(true);
   }
 
@@ -943,9 +984,16 @@ function animate(time) {
   } else {
     hideDeath();
   }
+}
 
+function renderLoop() {
+  // Drives both simulation (via gameTick) AND rendering when the tab is
+  // visible. When the tab is hidden, requestAnimationFrame stops firing —
+  // gameTick() also runs from a setInterval below, so movement and timers
+  // keep working; only rendering pauses (which is fine when nobody's looking).
+  gameTick();
   renderer.render(scene, camera);
-  requestAnimationFrame(animate);
+  requestAnimationFrame(renderLoop);
 }
 
 function lerpAngle(a, b, t) {
@@ -973,6 +1021,19 @@ window.__game = {
   wallSplatGroup, spawnWallSplat, updateOcclusion, emitSpray,
   THREE,
   getMe: () => players.get(myId),
+  getPhase: () => ({ phase, phaseEndsAt, remaining: phaseEndsAt - Date.now() }),
+  getKeys: () => ({ ...keys }),
+  getDiag: () => ({
+    tickCalls: window.__diag_tickCalls || 0,
+    substepCalls: window.__diag_substepCalls || 0,
+    lastFrameDt: window.__diag_lastFrameDt || 0,
+    lastSubsteps: window.__diag_lastSubsteps || 0,
+    accumulator: tickAccumulator,
+  }),
 };
 
-requestAnimationFrame(animate);
+requestAnimationFrame(renderLoop);
+// Backup tick when rAF is paused (hidden tab / offscreen iframe). Browsers
+// throttle setInterval to ~1Hz for hidden tabs, but that's still enough to
+// keep movement and the timer alive — far better than 0Hz.
+setInterval(gameTick, 16);

@@ -135,18 +135,20 @@ function pickColor() {
   return PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)];
 }
 
-// Spawn slots in the south-central main hall on floor 0 — well clear of the
-// staircase footprint (x ∈ [-2.5, 2.5], z ∈ [-2, 8]) and the surrounding
-// furniture. Players face north (toward the rest of the room) by default.
+// Spawn slots in the south room on floor 0 — pushed close to the south wall
+// so players are visibly far from the staircase. Avoid the staircase x-range
+// (x ∈ [-2.5, 2.5]) entirely, and stay clear of nearby furniture (TV at
+// x ∈ [2, 6] z ∈ [19, 19.6]; kitchen counter at x ∈ [-11.1, -10.1]).
+// Players face north (toward the rest of the room) by default.
 const SPAWN_SLOTS = [
-  { x: -4.0, z: 14.5 },
-  { x:  4.0, z: 14.5 },
-  { x: -1.5, z: 14.5 },
-  { x:  1.5, z: 14.5 },
+  { x: -7.5, z: 17.5 },
+  { x:  7.5, z: 17.5 },
+  { x: -4.0, z: 18.2 },
+  { x:  4.0, z: 18.2 },
+  { x: -7.5, z: 16.0 },
+  { x:  7.5, z: 16.0 },
   { x: -4.0, z: 16.5 },
   { x:  4.0, z: 16.5 },
-  { x: -1.5, z: 16.5 },
-  { x:  1.5, z: 16.5 },
 ];
 
 function spawnPosition(seed) {
@@ -184,6 +186,7 @@ function startCountdown() {
     const sp = spawnPosition(i++);
     p.x = sp.x; p.z = sp.z; p.floor = 0; p.ry = sp.ry;
     p.dead = false; p.deadUntil = 0;
+    console.log(`[spawn] countdown id=${p.id} slotIdx=${i-1} → (${sp.x},${sp.z}) ry=${sp.ry.toFixed(2)}`);
   }
   phase = 'countdown';
   phaseEndsAt = Date.now() + COUNTDOWN_SECONDS * 1000;
@@ -245,22 +248,28 @@ wss.on('connection', (ws) => {
   }
   const id = nextId++;
   const color = pickColor();
+  // Place new joiners in a south-hall lobby slot, not at the world origin
+  // (which is inside the staircase footprint).
+  const sp = spawnPosition(players.size);
   const player = {
     id, color, ws,
     name: `玩家${id}`,
-    x: 0, z: 0, floor: 0, ry: 0,
+    x: sp.x, z: sp.z, floor: sp.floor, ry: sp.ry,
     dead: false, deadUntil: 0,
     lastMoveAt: 0, lastPaintAt: 0, lastFootprintAt: 0,
   };
   players.set(id, player);
+  console.log(`[spawn] join id=${id} → slot=(${sp.x},${sp.z}) ry=${sp.ry.toFixed(2)} (sizeBefore=${players.size - 1})`);
 
+  const welcomePlayers = [...players.values()].map(publicPlayer);
+  console.log(`[spawn] welcome→id=${id} players=${JSON.stringify(welcomePlayers.map(p => ({id:p.id, x:p.x, z:p.z})))}`);
   send(player, {
     type: 'welcome',
     id, color, name: player.name,
     floorSize: FLOOR_SIZE, floor2Y: FLOOR2_Y,
     ramp: { xMin: RAMP_X_MIN, xMax: RAMP_X_MAX, zMin: RAMP_Z_BOTTOM, zMax: RAMP_Z_TOP },
     grid: GRID,
-    players: [...players.values()].map(publicPlayer),
+    players: welcomePlayers,
     phase, phaseEndsAt,
     ranking: lastRanking,
     respawnSeconds: RESPAWN_SECONDS,
