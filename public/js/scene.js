@@ -79,6 +79,7 @@ export function buildHouse(floorSize, floor2Y) {
         minX: x - w / 2, maxX: x + w / 2,
         minZ: z - d / 2, maxZ: z + d / 2,
         floor: opts.floor ?? 0,
+        rampGate: !!opts.rampGate,
       });
     }
     return m;
@@ -190,9 +191,14 @@ export function buildHouse(floorSize, floor2Y) {
   const railT = 0.08;
   const railMat = darkWoodMat;
   // North edge of hole (-Z): blocks upstairs walking south into hole.
+  // Tagged rampGate=true so a floor-1 player who is on the ramp itself
+  // can pass through it on the way down — without the tag the rail
+  // catches the descending player at the ramp's bottom and they stick
+  // around z = -1.6 (rail thickness + player radius), unable to drop
+  // through to floor 0.
   addBox(HX2 - HX1, railH, railT, railMat,
     (HX1 + HX2) / 2, floor2Y + railH / 2, HZ1,
-    { collide: true, floor: 1 });
+    { collide: true, floor: 1, rampGate: true });
   // East edge of hole (+X)
   addBox(railT, railH, HZ2 - HZ1, railMat,
     HX2, floor2Y + railH / 2, (HZ1 + HZ2) / 2,

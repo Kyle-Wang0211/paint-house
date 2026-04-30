@@ -668,9 +668,14 @@ function unstickIfNeeded(me) {
 function canStandAt(me, x, z) {
   const m = FLOOR_SIZE / 2 - PLAYER_RADIUS;
   if (x < -m || x > m || z < -m || z > m) return false;
-  const targetFloor = isOnRamp(x, z) ? me.floor : me.floor;
+  // The hole's north rail (rampGate) is meant to keep upstairs players
+  // from walking off the slab into the staircase opening — but for a
+  // floor-1 player who's actually on the ramp itself, we need them to
+  // pass through it to reach floor 0.
+  const onRampNow = me.onRamp || (isOnRamp(me.x, me.z) && isOnRamp(x, z));
   for (const c of colliders) {
-    if (c.floor !== targetFloor) continue;
+    if (c.floor !== me.floor) continue;
+    if (c.rampGate && onRampNow) continue;
     if (
       x > c.minX - PLAYER_RADIUS && x < c.maxX + PLAYER_RADIUS &&
       z > c.minZ - PLAYER_RADIUS && z < c.maxZ + PLAYER_RADIUS
