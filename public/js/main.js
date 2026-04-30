@@ -541,7 +541,13 @@ window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
   if (e.code === 'Space') firing = false;
 });
-canvas.addEventListener('mousedown', (e) => { if (e.button === 0) firing = true; });
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 0) firing = true;
+  // Make sure subsequent keydowns reach the page even when this is loaded
+  // inside an iframe that didn't get focus on click (e.g., embedded
+  // previews). Without this, WASD silently does nothing.
+  try { window.focus(); } catch {}
+});
 window.addEventListener('mouseup', (e) => { if (e.button === 0) firing = false; });
 
 // Camera yaw rate (keyboard-driven so trackpad users don't have to fight
@@ -558,8 +564,15 @@ startBtn.addEventListener('click', () => {
   const name = (nameInput.value || '').trim();
   if (name) net.send({ type: 'name', name });
   net.send({ type: 'startRound' });
+  // After clicking the start button, focus would stay on the button —
+  // pull keyboard focus back to the page so WASD reaches the window
+  // keydown listener immediately, with no "click the canvas first" step.
+  try { startBtn.blur(); window.focus(); } catch {}
 });
-restartBtn.addEventListener('click', () => net.send({ type: 'startRound' }));
+restartBtn.addEventListener('click', () => {
+  net.send({ type: 'startRound' });
+  try { restartBtn.blur(); window.focus(); } catch {}
+});
 nameInput.addEventListener('change', () => {
   const name = (nameInput.value || '').trim();
   if (name) net.send({ type: 'name', name });
@@ -820,10 +833,18 @@ function gameTick() {
     }
     // If we hit the substep cap, drop any leftover so we don't spiral.
     if (n >= MAX_SUBSTEPS) tickAccumulator = 0;
+    // Render at the end of every tick. This way when the tab/iframe is
+    // backgrounded and rAF stops firing, the setInterval-driven path still
+    // produces visible frames (jerky 1-Hz, but the avatar actually moves
+    // instead of looking permanently frozen at spawn).
+    renderer.render(scene, camera);
     window.__diag_tickCalls = (window.__diag_tickCalls || 0) + 1;
     window.__diag_substepCalls = (window.__diag_substepCalls || 0) + n;
     window.__diag_lastFrameDt = frameDt;
     window.__diag_lastSubsteps = n;
+  } catch (err) {
+    // Don't let a runFrame exception kill the loop — log and recover.
+    console.error('[gameTick] error', err);
   } finally {
     gameTickRunning = false;
   }
@@ -997,12 +1018,11 @@ function runFrame(dt, time) {
 }
 
 function renderLoop() {
-  // Drives both simulation (via gameTick) AND rendering when the tab is
-  // visible. When the tab is hidden, requestAnimationFrame stops firing —
-  // gameTick() also runs from a setInterval below, so movement and timers
-  // keep working; only rendering pauses (which is fine when nobody's looking).
+  // Drives the smooth 60Hz path when the tab is visible. gameTick() itself
+  // does the rendering, so when the tab is hidden and rAF stops firing,
+  // the setInterval(gameTick, 16) below still drives both simulation and
+  // rendering — just at a lower frame rate.
   gameTick();
-  renderer.render(scene, camera);
   requestAnimationFrame(renderLoop);
 }
 
