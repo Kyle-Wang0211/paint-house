@@ -943,11 +943,6 @@ function runFrame(dt, time) {
         lastSentPaintAt = time;
         emitSpray(me);
       }
-      if (!firing) {
-        // Reset the stroke anchor on key/button release so a new burst starts
-        // fresh rather than connecting to wherever we last stopped.
-        lastSprayX = null; lastSprayZ = null; lastSprayFloor = null;
-      }
     } else if (me.dead) {
       // Keep avatar pinned at last position while dead
       if (me.mesh) {
